@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Darwin
 
 /// GUI apps don't inherit the user's shell PATH, so agent CLIs installed via npm, Homebrew,
@@ -56,6 +56,22 @@ enum ShellEnv {
         for dir in path().split(separator: ":") {
             let candidate = "\(dir)/\(name)"
             if fm.isExecutableFile(atPath: candidate) { return candidate }
+        }
+        return bundled(name)
+    }
+
+    /// CLIs that ship inside a desktop app instead of on PATH, found by the app's bundle ID so
+    /// a renamed or moved app still works: (bundle ID, path inside the .app).
+    private static let bundledCLIs: [String: [(String, String)]] = [
+        // The Codex desktop app (ChatGPT.app on disk) carries its own `codex`.
+        "codex": [("com.openai.codex", "Contents/Resources/codex-cli/bin/codex")],
+    ]
+
+    private static func bundled(_ name: String) -> String? {
+        for (bundleID, inner) in bundledCLIs[name] ?? [] {
+            guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { continue }
+            let candidate = app.appendingPathComponent(inner).path
+            if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
         }
         return nil
     }

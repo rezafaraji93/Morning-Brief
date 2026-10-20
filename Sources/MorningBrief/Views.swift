@@ -1,12 +1,16 @@
 import AppKit
 import SwiftUI
 
+/// Settings, in the panel's brand cards. Shown inside the menu bar panel (gear button) and in a
+/// window when a failure notification is clicked. Every change saves immediately.
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
 
     @State private var customModel = false
-    @State private var newToolName = ""
+    @State private var newToolName = ""   // a catalog name, "custom", or "" for none
+    @State private var customName = ""
     @State private var newToolURL = ""
+    @State private var showAdvanced = false
 
     // MARK: derived bindings
 
@@ -51,17 +55,23 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        Form {
-            agentSection
-            scheduleSection
-            briefSection
-            connectionsSection
-            advancedSection
+        ScrollView {
+            VStack(spacing: 10) {
+                agentSection
+                scheduleSection
+                briefSection
+                slackSection
+                connectionsSection
+                advancedSection
+            }
+            .padding(.bottom, 4)
         }
-        .formStyle(.grouped)
-        .frame(width: 540)
-        .frame(minHeight: 620)
+        .scrollIndicators(.never)
+        .tint(Brand.red)
+        .task(id: serverRefreshKey) { await state.refreshServers() }
+        .environment(\.colorScheme, .dark)
         .onAppear {
+            state.detectNotice = nil
             let m = state.settings.model
             customModel = !m.isEmpty && !effectiveKind.modelOptions.contains(where: { $0.value == m })
         }
@@ -70,166 +80,586 @@ struct SettingsView: View {
     // MARK: sections
 
     private var agentSection: some View {
-        Section {
-            Picker("Agent", selection: $state.settings.agent) {
-                Text("Automatic — using \(state.resolvedAgentLabel)").tag("auto")
+        SettingsCard(title: "Agent") {
+            HStack(spacing: 6) {
                 ForEach(AgentKind.allCases) { k in
-                    if state.agents[k] != nil {
-                        Text(k.displayName).tag(k.rawValue)
+                    AgentChip(name: k.displayName, found: state.agents[k] != nil)
+                }
+            }
+            SettingsRow("Use") {
+                BrandMenu(label: agentLabel) {
+                    Picker("Agent", selection: $state.settings.agent) {
+                        Text("Automatic — \(state.resolvedAgentLabel)").tag("auto")
+                        ForEach(AgentKind.allCases) { k in
+                            if state.agents[k] != nil {
+                                Text(k.displayName).tag(k.rawValue)
+                            }
+                        }
                     }
                 }
             }
-
-            Picker("Model", selection: modelSelection) {
-                ForEach(effectiveKind.modelOptions) { opt in
-                    Text(opt.label).tag(opt.value)
+            SettingsRow("Model") {
+                BrandMenu(label: modelLabel) {
+                    Picker("Model", selection: modelSelection) {
+                        ForEach(effectiveKind.modelOptions) { opt in
+                            Text(opt.label).tag(opt.value)
+                        }
+                        Text("Custom…").tag("custom")
+                    }
                 }
-                Text("Custom…").tag("custom")
             }
             if customModel {
-                TextField("Model name", text: $state.settings.model,
-                          prompt: Text("exact model name for \(effectiveKind.displayName)"))
+                BrandField(placeholder: "Exact model name for \(effectiveKind.displayName)", text: $state.settings.model)
             }
-        } header: {
-            Text("Agent")
-        } footer: {
-            Text(agentFooter)
-                .font(.caption).foregroundStyle(.secondary)
+            Caption(agentFooter)
         }
+    }
+
+    /// Catalog tools the active agent doesn't have yet.
+    private var addableTools: [KnownTool] {
+        KnownTool.catalog.filter { !$0.isConnected(in: state.servers) }
+    }
+
+    private var selectedTool: KnownTool? { KnownTool.catalog.first { $0.name == newToolName } }
+
+    private var toolMenuLabel: String {
+        if newToolName == "custom" { return "Other server…" }
+        return selectedTool?.title ?? "Choose…"
+    }
+
+    private var toolName: String {
+        newToolName == "custom" ? customName.trimmingCharacters(in: .whitespaces).lowercased() : newToolName
+    }
+
+    private var canConnect: Bool {
+        !state.connecting && !toolName.isEmpty && newToolURL.lowercased().hasPrefix("https://")
+    }
+
+    /// Re-read the agent's servers whenever the agent in use changes.
+    private var serverRefreshKey: String {
+        "\(state.settings.agent)|\(state.agents.keys.map(\.rawValue).sorted())"
+    }
+
+    private var agentLabel: String {
+        AgentKind(rawValue: state.settings.agent)?.displayName ?? "Automatic — \(state.resolvedAgentLabel)"
+    }
+
+    private var modelLabel: String {
+        if customModel { return state.settings.model.isEmpty ? "Custom…" : state.settings.model }
+        let m = state.settings.model
+        return effectiveKind.modelOptions.first(where: { $0.value == m })?.label ?? m
     }
 
     private var agentFooter: String {
-        let found = AgentKind.allCases.compactMap { state.agents[$0] != nil ? $0.displayName : nil }
-        if found.isEmpty {
-            return "No agent found yet. Install Claude Code, Codex or Gemini CLI — or point to one under Advanced."
+        if state.agents.isEmpty {
+            return "No agent found yet. Install Claude Code, Codex or Gemini CLI, or point to one under Advanced."
         }
-        return "Found on this Mac: \(found.joined(separator: ", ")). Automatic prefers Claude Code, then Codex, then Gemini — nothing to configure."
+        return "Automatic prefers Claude Code, then Codex, then Gemini. Nothing to configure."
     }
 
     private var scheduleSection: some View {
-        Section("Schedule") {
-            DatePicker("Generate at", selection: timeBinding, displayedComponents: .hourAndMinute)
-            Toggle("Weekdays only", isOn: $state.settings.weekdaysOnly)
-            Toggle("Launch at login", isOn: $state.launchAtLogin)
-            Text("If your Mac is asleep at that time, the brief is written as soon as it wakes.")
-                .font(.caption).foregroundStyle(.secondary)
+        SettingsCard(title: "Schedule") {
+            SettingsRow("Generate at") {
+                DatePicker("Generate at", selection: timeBinding, displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+                    .datePickerStyle(.field)
+                    .fixedSize()
+            }
+            SettingsRow("Weekdays only") {
+                Toggle("Weekdays only", isOn: $state.settings.weekdaysOnly).labelsHidden().toggleStyle(.switch)
+            }
+            SettingsRow("Launch at login") {
+                Toggle("Launch at login", isOn: $state.launchAtLogin).labelsHidden().toggleStyle(.switch)
+            }
+            Caption("If your Mac is asleep at that time, the brief is written as soon as it wakes.")
         }
     }
 
     private var briefSection: some View {
-        Section {
-            TextField("Your first name", text: $state.settings.name)
-            TextField("Language", text: $state.settings.language, prompt: Text("English"))
-            VStack(alignment: .leading, spacing: 4) {
-                Text("About you")
-                TextEditor(text: $state.settings.about)
-                    .font(.body)
-                    .frame(minHeight: 54)
-                Text("Role and tools that matter, e.g. “Android engineer on the Users team; include Linear issues assigned to me.”")
-                    .font(.caption).foregroundStyle(.secondary)
+        SettingsCard(title: "Your brief") {
+            HStack(spacing: 10) {
+                LabeledField("First name") {
+                    BrandField(placeholder: "Reza", text: $state.settings.name)
+                }
+                LabeledField("Language") {
+                    BrandField(placeholder: "English", text: $state.settings.language)
+                }
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Extra sections (one per line)")
-                TextEditor(text: $state.settings.sections)
-                    .font(.body)
-                    .frame(minHeight: 54)
-                Text("e.g. “#android-releases: anything shipped or rolled back”.")
-                    .font(.caption).foregroundStyle(.secondary)
+            LabeledField("About you") {
+                BrandEditor(text: $state.settings.about)
             }
-            Toggle("Include action buttons (open a prefilled Claude chat)", isOn: $state.settings.includeButtons)
-            HStack {
+            Caption("Role and tools that matter, e.g. “Android engineer on the Users team; include Linear issues assigned to me.”")
+            LabeledField("Extra sections, one per line") {
+                BrandEditor(text: $state.settings.sections)
+            }
+            Caption("e.g. “#android-releases: anything shipped or rolled back”.")
+            SettingsRow("Action buttons") {
+                Toggle("Action buttons", isOn: $state.settings.includeButtons).labelsHidden().toggleStyle(.switch)
+            }
+            Caption("Adds a button to items Claude could move forward; it opens a prefilled Claude chat.")
+            Divider().overlay(Brand.ink.opacity(0.08))
+            HStack(spacing: 12) {
                 Button(state.personalizing ? "Asking your agent…" : "Fill from your agent's memory") {
                     Task { await state.personalize(overwrite: true) }
                 }
+                .buttonStyle(SecondaryButtonStyle())
                 .disabled(state.personalizing || state.isRunning)
+                if state.personalizing { ProgressView().controlSize(.small) }
             }
             if !state.personalizeStatus.isEmpty {
-                Text(state.personalizeStatus)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                StatusNote(state.personalizeStatus)
             }
-        } header: {
-            Text("Brief")
-        } footer: {
-            Text("“Fill from memory” asks the agent what it already knows about you (its own memory files) and writes these fields for you. It calls no tools and reads none of your data.")
-                .font(.caption).foregroundStyle(.secondary)
+            Caption("Asks your agent what it already knows about you and fills the fields above. It calls no tools and reads none of your data.")
+        }
+    }
+
+    private var slackSection: some View {
+        SettingsCard(title: "Slack channels") {
+            LabeledField("Channels to watch") {
+                BrandField(placeholder: "#android-development, #users-team, #general", text: $state.settings.watchChannels,
+                           multiline: true)
+            }
+            Caption("Read in full every morning (Friday to Sunday on Mondays), but only what concerns you makes the brief: your name, your work, decisions that change it, and asks to everyone with a deadline.")
+            LabeledField("Channels to summarize") {
+                BrandField(placeholder: "#android-releases", text: $state.settings.digestChannels, multiline: true)
+            }
+            Caption("Always get a short summary, whatever they're about.")
+            HStack(spacing: 12) {
+                Button(state.suggestingChannels ? "Looking at your Slack…" : "Suggest from Slack") {
+                    Task { await state.suggestChannels() }
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .disabled(state.suggestingChannels || state.isRunning)
+                if state.suggestingChannels { ProgressView().controlSize(.small) }
+            }
+            if let notice = state.channelsNotice {
+                NoticeView(notice: notice)
+            }
+            Caption("Your agent looks at the channels you're active in (read-only) and adds them to Channels to watch. Takes a minute or two.")
         }
     }
 
     private var connectionsSection: some View {
-        Section {
-            HStack {
-                Button(state.probing ? "Checking…" : "Check What's Connected") {
+        SettingsCard(title: "Connections") {
+            HStack(spacing: 12) {
+                Button(state.probing ? "Checking…" : "Check what's connected") {
                     Task { await state.probeConnections() }
                 }
+                .buttonStyle(SecondaryButtonStyle())
                 .disabled(state.probing || state.isRunning)
+                if state.probing { ProgressView().controlSize(.small) }
             }
-            if !state.probeResult.isEmpty {
-                Text(state.probeResult)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+            if !state.probeResult.isEmpty, !state.probing {
+                ConnectionReport(text: state.probeResult)
             }
-
-            Picker("Add a tool", selection: $newToolName) {
-                Text("Choose…").tag("")
-                ForEach(KnownTool.catalog) { t in
-                    Text(t.name.capitalized).tag(t.name)
+            Divider().overlay(Brand.ink.opacity(0.08))
+            SettingsRow("Add a tool") {
+                BrandMenu(label: toolMenuLabel) {
+                    Picker("Add a tool", selection: $newToolName) {
+                        Text("Choose…").tag("")
+                        ForEach(addableTools) { t in
+                            Text(t.title).tag(t.name)
+                        }
+                        Text("Other server…").tag("custom")
+                    }
                 }
             }
             .onChange(of: newToolName) { name in
+                state.connectStatus = ""
                 if let t = KnownTool.catalog.first(where: { $0.name == name }) {
                     newToolURL = t.url
+                } else if name == "custom" {
+                    newToolURL = ""
                 }
             }
-            TextField("Server URL", text: $newToolURL, prompt: Text("https://mcp.example.com/mcp"))
-            HStack {
-                Button(state.connecting ? "Adding…" : "Connect to \(effectiveKind.displayName)") {
-                    Task { await state.connectTool(name: newToolName, url: newToolURL) }
+            .onChange(of: state.servers) { _ in
+                // A tool that just got connected drops out of the list; don't leave it selected.
+                if let t = selectedTool, t.isConnected(in: state.servers) { newToolName = "" }
+            }
+            if let t = selectedTool, let steps = t.manualSteps(for: effectiveKind) {
+                NoticeView(notice: Notice(tone: .info, text: steps))
+            } else if !newToolName.isEmpty {
+                if newToolName == "custom" {
+                    BrandField(placeholder: "Short name, e.g. jira", text: $customName)
                 }
-                .disabled(state.connecting || newToolName.isEmpty || newToolURL.isEmpty)
+                BrandField(placeholder: "https://mcp.example.com/mcp", text: $newToolURL)
+                HStack(spacing: 12) {
+                    Button(state.connecting ? "Adding…" : "Connect to \(effectiveKind.displayName)") {
+                        Task { await state.connectTool(name: toolName, url: newToolURL) }
+                    }
+                    .buttonStyle(PillButtonStyle())
+                    .disabled(!canConnect)
+                    .opacity(canConnect ? 1 : 0.5)
+                    if state.connecting { ProgressView().controlSize(.small) }
+                }
             }
             if !state.connectStatus.isEmpty {
-                Text(state.connectStatus)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                StatusNote(state.connectStatus)
             }
-        } header: {
-            Text("Connections")
-        } footer: {
-            Text("The brief sees whatever your agent sees. Pick a tool (or type any MCP server URL) to register it with your agent; you sign in once and it shows up in the next brief. Slack, Gmail and Google Calendar have no public server URL — with Claude Code, turn them on as connectors at claude.ai and they're available here automatically.")
-                .font(.caption).foregroundStyle(.secondary)
+            Caption("The brief sees whatever your agent sees. Tools it already has don't appear in the list. Pick one (or Other server… for any MCP URL) and sign in once in the browser.")
         }
     }
 
     private var advancedSection: some View {
-        Section("Advanced") {
-            DisclosureGroup("Only needed if something's off") {
-                VStack(alignment: .leading, spacing: 4) {
-                    TextField("Agent binary path", text: $state.settings.binaryOverride,
-                              prompt: Text("/opt/homebrew/bin/claude"))
-                    Text("Where the agent's command-line program lives. Leave empty — the app finds it by itself. Fill it only if the Agent picker says “no agent found” although one is installed.")
-                        .font(.caption).foregroundStyle(.secondary)
+        SettingsCard {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { showAdvanced.toggle() }
+            } label: {
+                HStack {
+                    Text("Advanced")
+                        .font(Brand.font(13, .semibold))
+                        .foregroundStyle(Brand.inkSoft)
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Brand.inkGrey)
+                        .rotationEffect(.degrees(showAdvanced ? 0 : -90))
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    TextField("Extra command-line arguments", text: $state.settings.extraArgs)
-                    Text("Appended to every run, for power users — e.g. --mcp-config ~/brief-mcp.json. Most people never need this.")
-                        .font(.caption).foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if showAdvanced {
+                Caption("Only needed if something's off.")
+                LabeledField("Agent program path") {
+                    BrandField(placeholder: "/opt/homebrew/bin/claude", text: $state.settings.binaryOverride)
                 }
-                Stepper("Give up after \(state.settings.timeoutMinutes) minutes",
-                        value: $state.settings.timeoutMinutes, in: 3...45)
-                ForEach(AgentKind.allCases) { k in
-                    LabeledContent(k.displayName) {
-                        Text(state.agents[k] ?? "not installed")
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                Caption("Leave empty and the app finds it. Fill it only if your agent is installed but shows as not found.")
+                LabeledField("Extra command-line arguments") {
+                    BrandField(placeholder: "--mcp-config ~/brief-mcp.json", text: $state.settings.extraArgs)
+                }
+                Caption("Appended to every run. Most people never need this.")
+                SettingsRow("Give up after \(state.settings.timeoutMinutes) minutes") {
+                    Stepper("Timeout", value: $state.settings.timeoutMinutes, in: 3...45).labelsHidden()
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(AgentKind.allCases) { k in
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(k.displayName)
+                                .font(Brand.font(12.5, .semibold))
+                                .foregroundStyle(Brand.ink)
+                                .frame(width: 92, alignment: .leading)
+                            Text(state.agents[k] ?? "not installed")
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(Brand.inkSoft)
+                                .textSelection(.enabled)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                     }
                 }
-                Button("Re-detect Agents") { state.refreshAgents() }
+                HStack(spacing: 12) {
+                    Button(state.detecting ? "Detecting…" : "Re-detect agents") {
+                        Task { await state.redetectAgents() }
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(state.detecting)
+                    if state.detecting { ProgressView().controlSize(.small) }
+                }
+                if let notice = state.detectNotice {
+                    NoticeView(notice: notice)
+                }
             }
         }
+    }
+}
+
+// MARK: building blocks
+
+private struct SettingsCard<Content: View>: View {
+    var title: String? = nil
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let title {
+                Text(title)
+                    .font(Brand.font(13, .semibold))
+                    .foregroundStyle(Brand.inkSoft)
+            }
+            content
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Brand.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+/// Label on the left, control on the right.
+private struct SettingsRow<Control: View>: View {
+    let label: String
+    @ViewBuilder var control: Control
+
+    init(_ label: String, @ViewBuilder control: () -> Control) {
+        self.label = label
+        self.control = control()
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(label)
+                .font(Brand.font(14))
+                .foregroundStyle(Brand.ink)
+            Spacer(minLength: 8)
+            control
+        }
+        .frame(minHeight: 28)
+    }
+}
+
+/// Small label above a field.
+private struct LabeledField<Field: View>: View {
+    let label: String
+    @ViewBuilder var field: Field
+
+    init(_ label: String, @ViewBuilder field: () -> Field) {
+        self.label = label
+        self.field = field()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(Brand.font(12.5, .semibold))
+                .foregroundStyle(Brand.inkSoft)
+            field
+        }
+    }
+}
+
+private struct BrandField: View {
+    let placeholder: String
+    @Binding var text: String
+    /// Grows to a few lines instead of scrolling sideways.
+    var multiline = false
+
+    var body: some View {
+        // Own placeholder instead of the prompt, which macOS draws in a dim system grey.
+        TextField("", text: $text, axis: multiline ? .vertical : .horizontal)
+            .lineLimit(multiline ? 1...4 : 1...1)
+            .textFieldStyle(.plain)
+            .font(Brand.font(14))
+            .foregroundStyle(Brand.ink)
+            .background(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text(placeholder)
+                        .font(Brand.font(14))
+                        .foregroundStyle(Brand.placeholder)
+                        .lineLimit(1)
+                        .allowsHitTesting(false)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, multiline ? 8 : 0)
+            .frame(minHeight: 34)
+            .background(Brand.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+private struct BrandEditor: View {
+    @Binding var text: String
+
+    var body: some View {
+        TextEditor(text: $text)
+            .font(Brand.font(14))
+            .foregroundStyle(Brand.ink)
+            .scrollContentBackground(.hidden)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 8)
+            .frame(minHeight: 64)
+            .background(Brand.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+/// A pop-up menu drawn as a raised pill showing the current choice.
+private struct BrandMenu<Items: View>: View {
+    let label: String
+    @ViewBuilder var items: Items
+
+    var body: some View {
+        // A borderless menu draws only its label's text natively, so the pill and chevron sit around it.
+        HStack(spacing: 8) {
+            Menu {
+                items.pickerStyle(.inline)
+            } label: {
+                Text(label)
+                    .font(Brand.font(13.5, .medium))
+                    .foregroundStyle(Brand.ink)
+                    .lineLimit(1)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Brand.inkSoft)
+                .allowsHitTesting(false)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 30)
+        .background(Brand.raised, in: Capsule())
+    }
+}
+
+private struct AgentChip: View {
+    let name: String
+    let found: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(found ? Brand.green : Brand.inkGrey.opacity(0.6))
+                .frame(width: 7, height: 7)
+            Text(name)
+                .font(Brand.font(12.5, .semibold))
+                .foregroundStyle(found ? Brand.ink : Brand.inkGrey)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 26)
+        .background(Brand.raised.opacity(found ? 1 : 0.5), in: Capsule())
+        .help(found ? "Installed" : "Not installed")
+    }
+}
+
+/// "role: value" lines from the connection check, one row each with a status dot.
+private struct ConnectionReport: View {
+    let text: String
+
+    private struct Line: Identifiable {
+        let id: Int
+        let key: String?
+        let value: String
+        let color: Color
+    }
+
+    /// The first line names the agent that was checked ("Codex:").
+    private var agent: String? {
+        guard let first = text.split(separator: "\n").first, first.hasSuffix(":") else { return nil }
+        return String(first.dropLast())
+    }
+
+    private var lines: [Line] {
+        let raw = text.split(separator: "\n").map(String.init)
+        let body = agent != nil ? Array(raw.dropFirst()) : raw
+        return body.enumerated().map { i, line in
+            guard let r = line.range(of: ": ") else {
+                return Line(id: i, key: nil, value: line, color: Brand.inkGrey)
+            }
+            let key = String(line[..<r.lowerBound])
+            let value = String(line[r.upperBound...])
+            let color: Color
+            if key == "needs sign-in" || key == "not working" { color = Brand.red }
+            else if value.hasPrefix("not connected") { color = Brand.inkGrey.opacity(0.6) }
+            else { color = Brand.green }
+            return Line(id: i, key: key, value: value, color: color)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let agent {
+                Text("Checked with \(agent)")
+                    .font(Brand.font(12, .semibold))
+                    .foregroundStyle(Brand.inkGrey)
+                    .padding(.bottom, 2)
+            }
+            ForEach(lines) { l in
+                HStack(alignment: .top, spacing: 10) {
+                    Circle().fill(l.color).frame(width: 7, height: 7).padding(.top, 5)
+                    if let key = l.key {
+                        Text(key.prefix(1).uppercased() + key.dropFirst())
+                            .font(Brand.font(13, .semibold))
+                            .foregroundStyle(Brand.ink)
+                            .frame(width: 112, alignment: .leading)
+                    }
+                    Text(l.value)
+                        .font(Brand.font(13))
+                        .foregroundStyle(Brand.inkSoft)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Brand.raised.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+private struct Caption: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .font(Brand.font(12))
+            .foregroundStyle(Brand.inkGrey)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// A short result message with an icon that says whether it's good news.
+struct Notice: Equatable {
+    enum Tone { case success, info, warning }
+    let tone: Tone
+    let text: String
+}
+
+private struct NoticeView: View {
+    let notice: Notice
+
+    private var icon: (String, Color) {
+        switch notice.tone {
+        case .success: return ("checkmark.circle.fill", Brand.green)
+        case .info: return ("info.circle.fill", Brand.inkSoft)
+        case .warning: return ("exclamationmark.circle.fill", Brand.red)
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon.0)
+                .font(.system(size: 14))
+                .foregroundStyle(icon.1)
+                .padding(.top, 1)
+            Text(notice.text)
+                .font(Brand.font(13))
+                .foregroundStyle(Brand.ink)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Brand.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .transition(.opacity)
+    }
+}
+
+/// Result text from an action (fill from memory, connect), selectable so it can be copied.
+private struct StatusNote: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .font(Brand.font(13))
+            .foregroundStyle(Brand.inkSoft)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Secondary action: a raised pill, quieter than the red primary one.
+struct SecondaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Brand.font(13.5, .semibold))
+            .foregroundStyle(Brand.ink.opacity(isEnabled ? 1 : 0.4))
+            .padding(.horizontal, 16)
+            .frame(height: 32)
+            .background(configuration.isPressed ? Brand.raised.opacity(0.7) : Brand.raised, in: Capsule())
+            .contentShape(Capsule())
     }
 }

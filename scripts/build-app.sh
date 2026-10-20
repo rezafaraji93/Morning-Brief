@@ -32,7 +32,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/$EXEC" "$APP/Contents/MacOS/$EXEC"
 cp Resources/template.html Resources/prompt.md Resources/brief.schema.json Resources/personalize.schema.json \
-   "$APP/Contents/Resources/"
+   Resources/channels.schema.json "$APP/Contents/Resources/"
 if [ -f Resources/AppIcon.png ]; then
   ICONSET="$(mktemp -d)/AppIcon.iconset"
   mkdir -p "$ICONSET"

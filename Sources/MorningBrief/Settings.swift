@@ -37,6 +37,10 @@ struct AppSettings: Codable, Equatable {
     var about: String = ""
     /// Optional extra sections, one per line ("#android-releases channel", "PRs waiting on my review").
     var sections: String = ""
+    /// Slack channels the brief reads in full but reports only what concerns the user from.
+    var watchChannels: String = ""
+    /// Slack channels that always get a short daily summary, whatever they're about.
+    var digestChannels: String = ""
     var includeButtons: Bool = false
     var timeoutMinutes: Int = 15
 
@@ -57,6 +61,8 @@ struct AppSettings: Codable, Equatable {
         language = try c.decodeIfPresent(String.self, forKey: .language) ?? d.language
         about = try c.decodeIfPresent(String.self, forKey: .about) ?? d.about
         sections = try c.decodeIfPresent(String.self, forKey: .sections) ?? d.sections
+        watchChannels = try c.decodeIfPresent(String.self, forKey: .watchChannels) ?? d.watchChannels
+        digestChannels = try c.decodeIfPresent(String.self, forKey: .digestChannels) ?? d.digestChannels
         includeButtons = try c.decodeIfPresent(Bool.self, forKey: .includeButtons) ?? d.includeButtons
         timeoutMinutes = try c.decodeIfPresent(Int.self, forKey: .timeoutMinutes) ?? d.timeoutMinutes
     }
@@ -75,6 +81,16 @@ struct AppSettings: Codable, Equatable {
         if let data = try? JSONEncoder().encode(self) {
             UserDefaults.standard.set(data, forKey: AppSettings.key)
         }
+    }
+
+    /// "#a, b\n#c" → ["#a", "#b", "#c"]: commas, spaces or new lines between names, # optional.
+    static func channelList(_ raw: String) -> [String] {
+        var seen = Set<String>()
+        return raw.split(whereSeparator: { $0 == "," || $0 == "\n" || $0 == " " || $0 == "\t" })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && $0 != "#" }
+            .map { $0.hasPrefix("#") ? $0 : "#" + $0 }
+            .filter { seen.insert($0.lowercased()).inserted }
     }
 
     static func defaultFirstName() -> String {

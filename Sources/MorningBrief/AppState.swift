@@ -19,6 +19,10 @@ final class AppState: ObservableObject {
             settings.save()
             if settings.binaryOverride != oldValue.binaryOverride || settings.agent != oldValue.agent {
                 refreshAgents()
+                // Results from the previous agent would read as if they were this one's.
+                probeResult = ""
+                connectStatus = ""
+                servers = []
             }
         }
     }
@@ -31,6 +35,12 @@ final class AppState: ObservableObject {
     @Published private(set) var personalizing = false
     @Published var connectStatus: String = ""
     @Published private(set) var connecting = false
+    @Published var detectNotice: Notice?
+    @Published var channelsNotice: Notice?
+    @Published private(set) var suggestingChannels = false
+    /// The active agent's MCP servers from its last check, so Settings can hide tools already connected.
+    @Published private(set) var servers: [MCPServerStatus] = []
+    @Published private(set) var detecting = false
     @Published var launchAtLogin: Bool = (SMAppService.mainApp.status == .enabled) {
         didSet { applyLaunchAtLogin() }
     }
@@ -128,6 +138,52 @@ final class AppState: ObservableObject {
                 AppState.shared.agents = map
             }
         }
+    }
+
+    /// "Re-detect agents" in Settings: runs detection again and says what changed.
+    func redetectAgents() async {
+        guard !detecting else { return }
+        detecting = true
+        detectNotice = nil
+        defer { detecting = false }
+        let before = agents
+        let override = settings.binaryOverride, preferred = settings.agent
+        let found = await Task.detached { () -> [(AgentKind, String)] in
+            ShellEnv.resetCache()
+            return AgentDetector.detect(override: override, preferred: preferred)
+        }.value
+        var map: [AgentKind: String] = [:]
+        for (k, p) in found { map[k] = p }
+        agents = map
+        detectNotice = Self.detectionNotice(before: before, after: map)
+    }
+
+    nonisolated static func detectionNotice(before: [AgentKind: String], after: [AgentKind: String]) -> Notice {
+        func names(_ kinds: [AgentKind]) -> String {
+            let n = kinds.map(\.displayName)
+            return n.count < 2 ? n.joined() : n.dropLast().joined(separator: ", ") + " and " + n.last!
+        }
+        let all = AgentKind.allCases
+        let added = all.filter { after[$0] != nil && before[$0] == nil }
+        let lost = all.filter { before[$0] != nil && after[$0] == nil }
+        let moved = all.filter { before[$0] != nil && after[$0] != nil && before[$0] != after[$0] }
+        let installed = all.filter { after[$0] != nil }
+
+        if after.isEmpty {
+            return Notice(tone: .warning, text: "No agents found. Install Claude Code, Codex or Gemini CLI, or set the program path above.")
+        }
+        var parts: [String] = []
+        if !added.isEmpty { parts.append("Found \(names(added)).") }
+        if !moved.isEmpty { parts.append("\(names(moved)) moved; using the new location.") }
+        if !lost.isEmpty { parts.append("\(names(lost)) \(lost.count == 1 ? "is" : "are") no longer installed.") }
+        if parts.isEmpty {
+            if installed.count == all.count {
+                return Notice(tone: .success, text: "All agents are already found: \(names(installed)).")
+            }
+            return Notice(tone: .info, text: "Nothing new found. Installed: \(names(installed)).")
+        }
+        if installed.count == all.count, !added.isEmpty { parts.append("All agents are now found.") }
+        return Notice(tone: lost.isEmpty ? .success : .warning, text: parts.joined(separator: " "))
     }
 
     /// The agent to use: the one chosen in Settings, or the first installed (Claude, Codex, Gemini).
@@ -242,18 +298,76 @@ final class AppState: ObservableObject {
         probing = true
         probeResult = "Asking \(kind.displayName)…"
         defer { probing = false }
-        if kind == .claude, let servers = await claudeServers(binary: binary) {
-            probeResult = "\(kind.displayName):\n" + MCPList.summary(servers)
+        if let found = await configuredServers(kind: kind, binary: binary) {
+            servers = found
+            probeResult = "\(kind.displayName):\n" + MCPList.summary(found, kind: kind)
             return
         }
         do {
             let runner = AgentRunner(kind: kind, binary: binary, settings: settings)
             let text = try await runAgent(runner, prompt: PromptBuilder.probe, mode: .probe,
                                           logName: "probe-\(kind.rawValue)", timeout: 180)
-            probeResult = "\(kind.displayName):\n" + text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let found = MCPList.servers(fromToolNames: text)
+            servers = found
+            probeResult = "\(kind.displayName):\n" + MCPList.summary(found, kind: kind)
         } catch {
             probeResult = error.localizedDescription
         }
+    }
+
+    private struct ChannelSuggestion: Decodable {
+        struct Channel: Decodable { var channel: String; var why: String? }
+        var channels: [Channel]
+        var note: String?
+    }
+
+    /// "Suggest from Slack": the agent looks at the user's Slack activity (read-only) and proposes channels
+    /// to watch. New ones are added to the list; nothing already there is removed.
+    func suggestChannels() async {
+        guard !suggestingChannels else { return }
+        await ensureAgentsDetected()
+        guard let (kind, binary) = resolvedAgent() else {
+            channelsNotice = Notice(tone: .warning, text: BriefError.noAgent.localizedDescription)
+            return
+        }
+        suggestingChannels = true
+        channelsNotice = nil
+        defer { suggestingChannels = false }
+        do {
+            let runner = AgentRunner(kind: kind, binary: binary, settings: settings)
+            let text = try await runAgent(runner, prompt: PromptBuilder.suggestChannels(settings: settings),
+                                          mode: .channels, logName: "channels-\(kind.rawValue)", timeout: 420)
+            guard let found = JSONExtract.objects(in: text).lazy.compactMap({
+                $0.data(using: .utf8).flatMap { try? JSONDecoder().decode(ChannelSuggestion.self, from: $0) }
+            }).first else {
+                channelsNotice = Notice(tone: .warning, text: "\(kind.displayName) didn't return a usable list. Try again, or type the channels in.")
+                return
+            }
+            let added = Self.merge(found.channels.map(\.channel), into: &settings.watchChannels)
+            if found.channels.isEmpty {
+                let reason = found.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                channelsNotice = Notice(tone: .warning, text: reason.isEmpty
+                    ? "\(kind.displayName) couldn't find any channels. Is Slack connected? Check under Connections."
+                    : reason)
+            } else if added.isEmpty {
+                channelsNotice = Notice(tone: .info, text: "Nothing new. Your list already has the channels \(kind.displayName) found.")
+            } else {
+                channelsNotice = Notice(tone: .success, text: "Added from your Slack: \(added.joined(separator: ", ")). Remove any that don't matter to you.")
+            }
+        } catch {
+            channelsNotice = Notice(tone: .warning, text: error.localizedDescription)
+        }
+    }
+
+    /// Appends channels not already in the comma-separated list; returns the ones added.
+    private static func merge(_ channels: [String], into list: inout String) -> [String] {
+        let existing = Set(AppSettings.channelList(list).map { $0.lowercased() })
+        let added = AppSettings.channelList(channels.joined(separator: ","))
+            .filter { !existing.contains($0.lowercased()) }
+        if !added.isEmpty {
+            list = (AppSettings.channelList(list) + added).joined(separator: ", ")
+        }
+        return added
     }
 
     private struct Personalization: Decodable {
@@ -333,17 +447,25 @@ final class AppState: ObservableObject {
         }
         let (kind, binary) = resolved
         connecting = true
-        connectStatus = "Adding “\(name)” to \(kind.displayName)…"
+        connectStatus = kind == .codex
+            ? "Adding “\(name)” to Codex… if a browser window opens, sign in there."
+            : "Adding “\(name)” to \(kind.displayName)…"
         defer { connecting = false }
-        if kind == .claude, let servers = await claudeServers(binary: binary),
-           let hit = servers.first(where: { $0.state == .connected && $0.displayName.lowercased() == name.lowercased() }) {
-            connectStatus = "\(hit.displayName) is already connected (as “\(hit.name)”). Nothing to add."
-            return
+        if let found = await configuredServers(kind: kind, binary: binary) {
+            servers = found
+            let known = KnownTool.catalog.first { $0.name == name }
+            if let hit = known?.connectedServer(in: found)
+                ?? found.first(where: { $0.state == .connected && $0.displayName.lowercased() == name.lowercased() }) {
+                connectStatus = "\(known?.title ?? hit.displayName) is already connected (as “\(hit.name)”). Nothing to add."
+                return
+            }
         }
         do {
+            // Codex runs the OAuth sign-in inside `mcp add` and waits for the browser, so give it time.
+            let addTimeout: TimeInterval = kind == .codex ? 300 : 60
             var result = try await ProcessRunner.run(executable: binary,
                                                      args: kind.mcpAddArgs(name: name, url: url),
-                                                     cwd: Paths.work, timeout: 60, logName: "mcp-add-\(name)")
+                                                     cwd: Paths.work, timeout: addTimeout, logName: "mcp-add-\(name)")
             var replaced = false
             // Claude Code refuses to overwrite an entry with the same name; swap it for the new URL.
             if kind == .claude, result.status != 0, (result.stderr + result.stdout).contains("already exists") {
@@ -354,7 +476,10 @@ final class AppState: ObservableObject {
                                                      cwd: Paths.work, timeout: 60, logName: "mcp-add-\(name)")
                 replaced = true
             }
-            if result.status == 0 {
+            if result.status == 0 { await refreshServers() }
+            if result.status == 0, (result.stdout + result.stderr).contains("Successfully logged in") {
+                connectStatus = "Added “\(name)” to \(kind.displayName) and signed in. The next brief can use it."
+            } else if result.status == 0 {
                 connectStatus = (replaced ? "Replaced the old “\(name)” entry. " : "") + kind.mcpAuthHint(name: name)
             } else {
                 let tail = (result.stderr + result.stdout).split(separator: "\n").suffix(3).joined(separator: " ")
@@ -366,10 +491,27 @@ final class AppState: ObservableObject {
     }
 
     /// `claude mcp list`, parsed; nil if it fails or prints no servers.
-    private func claudeServers(binary: String) async -> [MCPServerStatus]? {
-        guard let r = try? await ProcessRunner.run(executable: binary, args: ["mcp", "list"],
-                                                   cwd: Paths.work, timeout: 90, logName: "mcp-list"),
+    /// Re-reads the active agent's servers without asking a model (agents with a list command only).
+    func refreshServers() async {
+        await ensureAgentsDetected()
+        guard let (kind, binary) = resolvedAgent(),
+              let found = await configuredServers(kind: kind, binary: binary) else { return }
+        servers = found
+    }
+
+    /// The agent's own list of MCP servers and their state (`claude mcp list`, `codex mcp list --json`).
+    /// nil when the agent has no such command or it fails; the caller then asks the model.
+    private func configuredServers(kind: AgentKind, binary: String) async -> [MCPServerStatus]? {
+        let args: [String]
+        switch kind {
+        case .claude: args = ["mcp", "list"]
+        case .codex: args = ["mcp", "list", "--json"]
+        case .gemini: return nil
+        }
+        guard let r = try? await ProcessRunner.run(executable: binary, args: args,
+                                                   cwd: Paths.work, timeout: 90, logName: "mcp-list-\(kind.rawValue)"),
               r.status == 0 else { return nil }
+        if kind == .codex { return MCPList.parse(codexJSON: r.stdout) }
         let servers = MCPList.parse(r.stdout + "\n" + r.stderr)
         return servers.isEmpty ? nil : servers
     }

@@ -41,10 +41,20 @@ final class WindowManager: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
     func showSettings() {
         if settingsWindow == nil {
-            let host = NSHostingController(rootView: SettingsView().environmentObject(AppState.shared))
+            let root = SettingsView()
+                .environmentObject(AppState.shared)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 10)
+                .padding(.top, 34)   // clear the transparent title bar
+                .frame(width: 440, height: 744)
+                .background(Brand.ocean)
+            let host = NSHostingController(rootView: root)
             let w = NSWindow(contentViewController: host)
             w.title = "Morning Brief Settings"
-            w.styleMask = [.titled, .closable, .miniaturizable]
+            w.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+            w.titlebarAppearsTransparent = true
+            w.appearance = NSAppearance(named: .darkAqua)
+            w.backgroundColor = Brand.oceanNS
             w.isReleasedWhenClosed = false
             w.center()
             settingsWindow = w

@@ -16,8 +16,8 @@ Use whatever tools you have for these roles: calendar, chat (e.g. Slack), email,
 
 1. Calendar: one fetch, today 00:00 to tomorrow 24:00 in {{TIMEZONE}}. Only today's events are drawn. Tomorrow's events are context: they can earn a prep item. For tomorrow's events {{NAME}} organizes or that name a project, note the project name.
 2. Email (if connected): threads where {{NAME}} was asked something directly and hasn't replied. A group alias or team-wide ask isn't a bottleneck.
-3. Chat: mentions and DMs from the last ~2 days ending in a question {{NAME}} hasn't answered or reacted to.
-4. Meeting notes: action items assigned to {{NAME}} from the last few days.
+3. Chat: mentions and DMs since {{SINCE}} ending in a question {{NAME}} hasn't answered or reacted to.{{CHANNEL_STEPS}}
+4. Meeting notes: action items assigned to {{NAME}} from the last few days. Also look back three weeks for commitments {{NAME}} owns that have a deadline, stated ("by Friday") or implied ("before the next release", "this sprint"). For each, search the task tracker for a ticket that covers it: if there is one, skip it, because standups track tickets. Also skip it if it's done (a merged PR, a closed ticket, or a message saying it's fixed). Turn an implied deadline into a date from the calendar or chat (a release date, a sprint end) when you can.
 5. Tomorrow prep: for each project noted in step 1, one chat search for the last 7 days.
 6. Spare: tasks assigned to {{NAME}} that are due, or docs awaiting their review.
 Pull ~8 candidates per search from snippets. Before an item lands in needs_attention, open its thread once: if {{NAME}} already replied or reacted, it moves to resolved or is dropped.
@@ -25,9 +25,10 @@ Pull ~8 candidates per search from snippets. Before an item lands in needs_atten
 
 ## Sort
 
-- needs_attention: it would cost {{NAME}} something to ignore until tomorrow: someone is blocked on them, a window closes today, or it gets harder to undo. Must be anchored to a real tool result and still open. A prep item counts: something today or tomorrow that goes better if they've read, decided or drafted first. If they organize the meeting, the prep is the agenda; for a retro or review, two or three thoughts to arrive holding; otherwise it needs a concrete anchor (a doc, a decision, a draft).
+- needs_attention: it would cost {{NAME}} something to ignore until tomorrow: someone is blocked on them, a window closes today, a meeting commitment is due within two days or overdue, or it gets harder to undo. Must be anchored to a real tool result and still open. A prep item counts: something today or tomorrow that goes better if they've read, decided or drafted first. If they organize the meeting, the prep is the agenda; for a retro or review, two or three thoughts to arrive holding; otherwise it needs a concrete anchor (a doc, a decision, a draft).
 - resolved: things that closed recently and are worth a glance: a thread someone else answered, a reply to their question, a meeting the organizer cancelled, a launch that shipped.
-- Everything else is dropped silently. Keep each list short (0-4 items).
+- From your meetings: the other open meeting commitments from step 4, for a section headed "From your meetings" (in {{LANGUAGE}}), soonest first, at most 4. Each title says what's owed and how long is left ("Fix the login crash, 3 days left"); the text names the meeting, when it was agreed, and the due date. If the deadline has no date, say it as agreed ("before the next release"). Leave out commitments agreed with no deadline at all.
+{{CHANNEL_SORT}}- Everything else is dropped silently. Keep each list short (0-4 items). A quiet brief is a good brief: when in doubt, leave it out.
 
 ## Write
 
@@ -43,7 +44,7 @@ Pull ~8 candidates per search from snippets. Before an item lands in needs_atten
 - Item text: one sentence. Name the source in prose (tool, person, when) plus the substance. For needs_attention, the ask and why it matters today; for a prep item, tomorrow's thing and what the prep is; for resolved, what closed, who closed it, when, and the outcome. Any quote must be verbatim.
 - source_phrase: the exact substring of text that names the source ("in your DMs this morning", "on tomorrow's calendar", "in the doc"); it becomes the link. url: the https permalink for that thread, event, issue or doc, or null if the tool returned none.
 - button: {{BUTTONS}}
-- sections: one entry per requested section, in order, each with either prose or items. Drop a section that found nothing. Empty array if none were requested.
+- sections: in this order, dropping any that found nothing: "From your meetings", {{CHANNEL_SECTIONS}}then one entry per requested section. A requested section holds only items that match its description exactly (a review "requested from them" is not a review asked of anyone); drop it if nothing does. Each has either prose or items. Empty array if there are none.
 - empty_message: if both lists are empty, a calm line like "Nothing needs you this morning." Otherwise null.
 - If no calendar is reachable: events and acts are empty arrays, day_class is "open", motif kind is "none", the headline says in one calm clause that the calendar wasn't reachable, and connect_note names what to connect. Never pad acts with "no data".
 - connect_note: if only the calendar was available, one short line inviting them to connect chat or email in their agent's settings. Otherwise null.

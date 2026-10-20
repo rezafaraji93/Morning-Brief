@@ -10,6 +10,7 @@ enum Brand {
     static let ink = Color(hex: 0xFFF2E5)
     static let inkSoft = ink.opacity(0.72)
     static let inkGrey = ink.opacity(0.45)
+    static let placeholder = ink.opacity(0.62)
     static let red = Color(hex: 0xF11F4C)
     static let redPressed = Color(hex: 0xD81A43)
     static let green = Color(hex: 0x00DB9A)
@@ -50,20 +51,28 @@ struct BriefPanel: View {
     @EnvironmentObject var state: AppState
     @State private var tab: Tab = .today
     @State private var openedEarlier: StoredBrief?
+    @State private var showingSettings = false
 
     enum Tab { case today, earlier }
 
     var body: some View {
         VStack(spacing: 8) {
             header
-            tabBar
-            Group {
-                switch tab {
-                case .today: today
-                case .earlier: earlier
+            if showingSettings {
+                settingsBar
+                SettingsView()
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                tabBar
+                Group {
+                    switch tab {
+                    case .today: today
+                    case .earlier: earlier
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             footer
         }
         .padding(10)
@@ -96,8 +105,8 @@ struct BriefPanel: View {
             }
             .disabled(state.isRunning)
             .keyboardShortcut("r")
-            PanelIconButton(systemName: "gearshape", help: "Settings") {
-                WindowManager.shared.showSettings()
+            PanelIconButton(systemName: showingSettings ? "gearshape.fill" : "gearshape", help: "Settings") {
+                showingSettings.toggle()
             }
             .keyboardShortcut(",")
             Menu {
@@ -140,6 +149,31 @@ struct BriefPanel: View {
                     WindowManager.shared.showBrief(b)
                 }
             }
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 48)
+        .background(Brand.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var settingsBar: some View {
+        HStack {
+            Button {
+                showingSettings = false
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .semibold))
+                    Text("Settings").font(Brand.font(15, .semibold))
+                }
+                .foregroundStyle(Brand.ink)
+                .frame(height: 48)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            Spacer()
+            Text("Changes save as you go")
+                .font(Brand.font(12))
+                .foregroundStyle(Brand.inkGrey)
         }
         .padding(.horizontal, 18)
         .frame(height: 48)

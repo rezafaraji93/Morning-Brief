@@ -1,0 +1,35 @@
+{
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "channels",
+  "note"
+ ],
+ "properties": {
+  "channels": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "channel",
+     "why"
+    ],
+    "properties": {
+     "channel": {
+      "type": "string"
+     },
+     "why": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "note": {
+   "type": [
+    "string",
+    "null"
+   ]
+  }
+ }
+}

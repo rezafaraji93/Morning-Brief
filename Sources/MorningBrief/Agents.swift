@@ -13,7 +13,17 @@ struct AgentRunner {
     let binary: String
     let settings: AppSettings
 
-    enum Mode { case brief, probe, personalize }
+    enum Mode { case brief, probe, personalize, channels }
+
+    /// The JSON schema an answer in this mode must match, if any.
+    private static func schemaName(_ mode: Mode) -> String? {
+        switch mode {
+        case .brief: return "brief.schema"
+        case .personalize: return "personalize.schema"
+        case .channels: return "channels.schema"
+        case .probe: return nil
+        }
+    }
 
     struct Invocation {
         let args: [String]
@@ -30,10 +40,8 @@ struct AgentRunner {
                 a += ["--permission-mode", claudePermissionMode]
             }
             a += ["--disallowedTools", "Bash", "Edit", "Write", "NotebookEdit"]
-            if mode == .brief {
-                a += ["--json-schema", try Res.string("brief.schema", "json")]
-            } else if mode == .personalize {
-                a += ["--json-schema", try Res.string("personalize.schema", "json")]
+            if let schema = Self.schemaName(mode) {
+                a += ["--json-schema", try Res.string(schema, "json")]
             }
             if !model.isEmpty { a += ["--model", model] }
             return Invocation(args: a + extra, outputFile: nil)
@@ -46,9 +54,7 @@ struct AgentRunner {
                      "--color", "never",
                      "-C", Paths.work.path,
                      "-o", out.path]
-            if mode == .brief, let schema = Res.url("brief.schema", "json") {
-                a += ["--output-schema", schema.path]
-            } else if mode == .personalize, let schema = Res.url("personalize.schema", "json") {
+            if let name = Self.schemaName(mode), let schema = Res.url(name, "json") {
                 a += ["--output-schema", schema.path]
             }
             if !model.isEmpty { a += ["-m", model] }
@@ -160,38 +166,100 @@ extension AgentKind {
         }
     }
 
+    /// How to sign in to a registered server that still needs it.
+    var signInHint: String {
+        switch self {
+        case .claude: return "open Terminal, run `claude`, type /mcp"
+        case .codex: return "open Terminal and run `codex mcp login <name>`"
+        case .gemini: return "open Terminal, run `gemini`, type /mcp auth <name>"
+        }
+    }
+
     /// What the person still has to do once the server is registered.
     func mcpAuthHint(name: String) -> String {
         switch self {
         case .claude:
             return "Added. To sign in: open Terminal, run `claude`, type /mcp, choose “\(name)” and authenticate. After that the brief can use it."
         case .codex:
-            return "Added. Open Terminal and run `codex` once — it asks you to sign in to “\(name)” the first time it's used."
+            return "Added. If it didn't sign you in just now, open Terminal and run `codex mcp login \(name)`."
         case .gemini:
             return "Added. Open Terminal and run `gemini` once, then type /mcp auth \(name) to sign in."
         }
     }
 }
 
-/// Well-known remote MCP servers, used to prefill the Connections form.
+/// Well-known remote MCP servers for the Connections form, most-used first.
 /// URLs are editable in the UI in case a vendor moves theirs.
 struct KnownTool: Identifiable, Hashable {
-    let name: String
+    /// How a tool gets connected.
+    enum Setup: Hashable {
+        /// The agent registers the server and signs in through the browser.
+        case signIn
+        /// The vendor only lets approved apps sign in, so it's set up elsewhere.
+        case approvedAppsOnly
+        /// No browser sign-in; the server wants a personal access token.
+        case token(createAt: String)
+    }
+
+    let name: String     // the agent's config name
+    let title: String
     let url: String
+    var setup: Setup = .signIn
     var id: String { name }
 
     static let catalog: [KnownTool] = [
-        KnownTool(name: "linear", url: "https://mcp.linear.app/mcp"),
-        KnownTool(name: "notion", url: "https://mcp.notion.com/mcp"),
-        KnownTool(name: "asana", url: "https://mcp.asana.com/v2/mcp"),
-        KnownTool(name: "atlassian", url: "https://mcp.atlassian.com/v1/mcp"),
-        KnownTool(name: "github", url: "https://api.githubcopilot.com/mcp/"),
-        KnownTool(name: "sentry", url: "https://mcp.sentry.dev/mcp"),
+        KnownTool(name: "google-calendar", title: "Google Calendar",
+                  url: "https://calendarmcp.googleapis.com/mcp/v1", setup: .approvedAppsOnly),
+        KnownTool(name: "slack", title: "Slack", url: "https://mcp.slack.com/mcp", setup: .approvedAppsOnly),
+        KnownTool(name: "granola", title: "Granola", url: "https://mcp.granola.ai/mcp"),
+        KnownTool(name: "linear", title: "Linear", url: "https://mcp.linear.app/mcp"),
+        KnownTool(name: "notion", title: "Notion", url: "https://mcp.notion.com/mcp"),
+        KnownTool(name: "github", title: "GitHub", url: "https://api.githubcopilot.com/mcp/",
+                  setup: .token(createAt: "https://github.com/settings/personal-access-tokens")),
+        KnownTool(name: "atlassian", title: "Atlassian (Jira, Confluence)", url: "https://mcp.atlassian.com/v1/mcp"),
+        KnownTool(name: "asana", title: "Asana", url: "https://mcp.asana.com/v2/mcp"),
+        KnownTool(name: "sentry", title: "Sentry", url: "https://mcp.sentry.dev/mcp"),
     ]
+
+    /// The agent's connected server that already is this tool, e.g. "claude.ai Linear".
+    func connectedServer(in servers: [MCPServerStatus]) -> MCPServerStatus? {
+        let short = title.split(separator: " ").first.map { String($0).lowercased() } ?? name
+        return servers.first { s in
+            guard s.state == .connected else { return false }
+            let display = s.displayName.lowercased()
+            return s.name.lowercased() == name || display == title.lowercased() || display == short
+        }
+    }
+
+    func isConnected(in servers: [MCPServerStatus]) -> Bool { connectedServer(in: servers) != nil }
+
+    /// What to do instead of "Connect" when the tool can't be signed in to from here.
+    func manualSteps(for kind: AgentKind) -> String? {
+        switch setup {
+        case .signIn:
+            return nil
+        case .approvedAppsOnly:
+            switch kind {
+            case .claude:
+                return "\(title) only lets approved apps sign in, so it can't be added from here. Turn it on at claude.ai under Settings → Connectors; Claude Code picks it up automatically and it shows as connected here."
+            case .codex, .gemini:
+                return "\(title) only lets approved apps sign in, so \(kind.displayName) can't add it from here. Claude Code can use it through claude.ai connectors (Settings → Connectors)."
+            }
+        case .token(let createAt):
+            switch kind {
+            case .claude:
+                return "\(title) signs in with a personal access token instead of the browser. Create a read-only token at \(createAt), then run in Terminal:\nclaude mcp add --transport http --scope user \(name) \(url) --header \"Authorization: Bearer YOUR_TOKEN\""
+            case .codex:
+                return "\(title) signs in with a personal access token instead of the browser. Create a read-only token at \(createAt), then run in Terminal:\ncodex mcp add \(name) --url \(url) --bearer-token-env-var GITHUB_PAT\nCodex reads the token from GITHUB_PAT, so that variable has to be set where Codex runs."
+            case .gemini:
+                return "\(title) signs in with a personal access token instead of the browser. Create one at \(createAt) and add the server with an Authorization header in Gemini CLI's settings."
+            }
+        }
+    }
 }
 
 /// One server row from `claude mcp list`.
-struct MCPServerStatus {
+struct MCPServerStatus: Equatable {
     enum State { case connected, needsAuth, failed, other }
     let name: String     // as configured, e.g. "claude.ai Linear" or "plugin:slack:slack"
     let state: State
@@ -238,8 +306,60 @@ enum MCPList {
                                   "clickup", "github", "gitlab", "trello", "monday", "drive"]),
     ]
 
+    /// For agents without a health-check command: the model lists the tool names it can call and
+    /// this maps them to roles, so the model never decides what counts as connected.
+    static func servers(fromToolNames text: String) -> [MCPServerStatus] {
+        var servers: [MCPServerStatus] = []
+        for raw in text.split(separator: "\n") {
+            let tool = raw.trimmingCharacters(in: CharacterSet(charactersIn: " \t-*•`")).lowercased()
+            // Tool names have no spaces; anything else is prose the model added.
+            guard !tool.isEmpty, !tool.contains(" ") else { continue }
+            let server = serverName(ofTool: tool)
+            for (_, keywords) in roles {
+                for k in keywords where tool.contains(k) {
+                    // Prefer the server's own name ("google_calendar"); fall back to the keyword when
+                    // the server is a generic bundle such as "codex_apps".
+                    let name = pretty(server.contains(k) ? server : k)
+                    if !servers.contains(where: { $0.name == name }) {
+                        servers.append(MCPServerStatus(name: name, state: .connected))
+                    }
+                }
+            }
+        }
+        return servers
+    }
+
+    /// "mcp__slack__search" → "slack", "linear.get_issue" → "linear".
+    private static func serverName(ofTool tool: String) -> String {
+        if tool.hasPrefix("mcp__") {
+            let rest = tool.dropFirst("mcp__".count)
+            return String(rest.components(separatedBy: "__").first ?? String(rest))
+        }
+        if let dot = tool.firstIndex(of: ".") { return String(tool[..<dot]) }
+        return tool
+    }
+
+    private static func pretty(_ s: String) -> String {
+        s.split(whereSeparator: { $0 == "_" || $0 == "-" })
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+
+    /// Parses `codex mcp list --json`: each configured server with its sign-in state. Codex loads an
+    /// MCP server's tools only when it needs them, so a model asked for its tools leaves them out.
+    static func parse(codexJSON output: String) -> [MCPServerStatus]? {
+        guard let start = output.firstIndex(of: "["), let end = output.lastIndex(of: "]"), start < end,
+              let data = String(output[start...end]).data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
+        return rows.compactMap { row in
+            guard let name = row["name"] as? String, (row["enabled"] as? Bool) != false else { return nil }
+            let state: MCPServerStatus.State = (row["auth_status"] as? String) == "not_logged_in" ? .needsAuth : .connected
+            return MCPServerStatus(name: name, state: state)
+        }
+    }
+
     /// One line per brief role, then anything that needs a sign-in or is broken.
-    static func summary(_ servers: [MCPServerStatus]) -> String {
+    static func summary(_ servers: [MCPServerStatus], kind: AgentKind = .claude) -> String {
         let connected = servers.filter { $0.state == .connected }
         let connectedNames = Set(connected.map { $0.displayName.lowercased() })
         var lines: [String] = []
@@ -255,11 +375,12 @@ enum MCPList {
             if !needsAuth.contains(s.displayName) { needsAuth.append(s.displayName) }
         }
         if !needsAuth.isEmpty {
-            lines.append("needs sign-in: \(needsAuth.joined(separator: ", ")) (open Terminal, run `claude`, type /mcp)")
+            lines.append("needs sign-in: \(needsAuth.joined(separator: ", ")) (\(kind.signInHint))")
         }
-        let failed = servers.filter { $0.state == .failed }.map(\.name)
+        // A broken leftover entry for a tool that works through another entry isn't worth flagging.
+        let failed = servers.filter { $0.state == .failed && !connectedNames.contains($0.displayName.lowercased()) }.map(\.name)
         if !failed.isEmpty {
-            lines.append("not working: \(failed.joined(separator: ", ")) (check its URL, or remove it with `claude mcp remove <name>`)")
+            lines.append("not working: \(failed.joined(separator: ", ")) (check its URL, or remove it with `\(kind.binaryName) mcp remove <name>`)")
         }
         return lines.joined(separator: "\n")
     }
