@@ -12,12 +12,17 @@ final class WindowManager: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private var webView: WKWebView?
     private var settingsWindow: NSWindow?
 
+    func showBrief(_ b: StoredBrief) {
+        showBrief(url: BriefStore.rerender(b, buttons: AppState.shared.settings.includeButtons))
+    }
+
     func showBrief(url: URL) {
         if briefWindow == nil {
             let config = WKWebViewConfiguration()
             config.websiteDataStore = .nonPersistent()
             let web = WKWebView(frame: .zero, configuration: config)
             web.navigationDelegate = self
+            web.underPageBackgroundColor = Brand.oceanNS
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 980),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
@@ -53,13 +58,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WKNavigationDelegate {
         w?.orderFrontRegardless()
     }
 
-    // Links in the brief open in the default browser; only the local brief file loads in the view.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
-        guard let url = navigationAction.request.url else { return .cancel }
-        if url.isFileURL { return .allow }
-        if url.scheme == "https", navigationAction.navigationType == .linkActivated {
-            NSWorkspace.shared.open(url)
-        }
-        return .cancel
+        BriefLinks.policy(for: navigationAction)
     }
 }

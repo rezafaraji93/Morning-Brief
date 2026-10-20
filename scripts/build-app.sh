@@ -31,8 +31,8 @@ APP="dist/$APP_NAME.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/$EXEC" "$APP/Contents/MacOS/$EXEC"
-cp Resources/template.html Resources/prompt.md Resources/brief.schema.json \
-   Resources/fraunces-latin-600-normal.woff2 Resources/Fraunces-OFL.txt "$APP/Contents/Resources/"
+cp Resources/template.html Resources/prompt.md Resources/brief.schema.json Resources/personalize.schema.json \
+   "$APP/Contents/Resources/"
 if [ -f Resources/AppIcon.png ]; then
   ICONSET="$(mktemp -d)/AppIcon.iconset"
   mkdir -p "$ICONSET"
@@ -59,7 +59,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSHumanReadableCopyright</key><string>Internal tool. Fraunces font under the SIL Open Font License.</string>
+  <key>NSHumanReadableCopyright</key><string>Internal tool.</string>
 </dict>
 </plist>
 PLIST

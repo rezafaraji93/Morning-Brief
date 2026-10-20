@@ -57,7 +57,8 @@ enum PromptBuilder {
     anything, and do not read or write files. Answer only from the context and memory you already carry about \
     this user (for example your user-level memory or instruction files). Return ONLY one JSON object, no prose: \
     {"name": their first name or null, "about": one or two sentences of setup notes about them — role, team, and \
-    which connected tools matter for a daily work brief — or null if you know nothing, "sections": up to three \
+    which tools matter for a daily work brief, but not whether they are connected or signed in right now — or null \
+    if you know nothing, "sections": up to three \
     short extra-section ideas for their brief as plain strings (empty array if none)}. Example section: \
     "#releases channel: anything shipped or rolled back". If you know nothing about this user, return \
     {"name":null,"about":null,"sections":[]}.
@@ -78,11 +79,10 @@ enum BriefRenderer {
         var options: Options
     }
 
-    /// Fills Resources/template.html with the font and the brief as an inert JSON data island.
+    /// Fills Resources/template.html with the brief as an inert JSON data island.
     /// The page's own script draws everything with textContent, so agent text can't become markup.
     static func render(_ brief: Brief, buttons: Bool) throws -> (html: String, json: Data) {
         let template = try Res.string("template", "html")
-        let font = try Res.data("fraunces-latin-600-normal", "woff2").base64EncodedString()
         let json = try Brief.encoder.encode(Payload(brief: brief, options: .init(buttons: buttons)))
         guard var island = String(data: json, encoding: .utf8) else {
             throw BriefError.unparseable("Couldn't encode the brief.")
@@ -94,9 +94,7 @@ enum BriefRenderer {
             .replacingOccurrences(of: "&", with: "\\u0026")
             .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
             .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
-        let html = template
-            .replacingOccurrences(of: "__FONT_B64__", with: font)
-            .replacingOccurrences(of: "__BRIEF_JSON__", with: island)
+        let html = template.replacingOccurrences(of: "__BRIEF_JSON__", with: island)
         let raw = try Brief.encoder.encode(brief)
         return (html, raw)
     }

@@ -9,11 +9,11 @@ struct MorningBriefApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent().environmentObject(state)
+            BriefPanel().environmentObject(state)
         } label: {
             Image(systemName: state.menuIcon)
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
     }
 }
 

@@ -1,51 +1,6 @@
 import AppKit
 import SwiftUI
 
-struct MenuContent: View {
-    @EnvironmentObject var state: AppState
-
-    var body: some View {
-        Text(state.statusLine)
-
-        Divider()
-
-        Button("Open Today's Brief") {
-            if let b = state.todayBrief { WindowManager.shared.showBrief(url: b.htmlURL) }
-        }
-        .disabled(state.todayBrief == nil)
-        .keyboardShortcut("o")
-
-        Button(state.todayBrief == nil ? "Generate Now" : "Regenerate Today's Brief") {
-            Task { await state.generate(manual: true) }
-        }
-        .disabled(state.isRunning)
-        .keyboardShortcut("g")
-
-        let past = state.recent.filter { $0.day != BriefStore.dayKey() }
-        if !past.isEmpty {
-            Menu("Earlier Briefs") {
-                ForEach(past.prefix(7)) { b in
-                    Button(b.displayName) { WindowManager.shared.showBrief(url: b.htmlURL) }
-                }
-            }
-        }
-
-        Divider()
-
-        Button("Settings…") { WindowManager.shared.showSettings() }
-            .keyboardShortcut(",")
-        Button("Show Logs in Finder") {
-            Paths.ensure()
-            NSWorkspace.shared.activateFileViewerSelecting([Paths.logs])
-        }
-
-        Divider()
-
-        Button("Quit Morning Brief") { NSApp.terminate(nil) }
-            .keyboardShortcut("q")
-    }
-}
-
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
 

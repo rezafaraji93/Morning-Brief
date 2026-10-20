@@ -227,7 +227,6 @@ final class AppState: ObservableObject {
             recent = BriefStore.recent()
             status = .idle
             notifyReady(brief: brief, url: url)
-            if manual { WindowManager.shared.showBrief(url: url) }
         } catch {
             fail(error.localizedDescription, notify: !manual)
         }
@@ -243,6 +242,10 @@ final class AppState: ObservableObject {
         probing = true
         probeResult = "Asking \(kind.displayName)…"
         defer { probing = false }
+        if kind == .claude, let servers = await claudeServers(binary: binary) {
+            probeResult = "\(kind.displayName):\n" + MCPList.summary(servers)
+            return
+        }
         do {
             let runner = AgentRunner(kind: kind, binary: binary, settings: settings)
             let text = try await runAgent(runner, prompt: PromptBuilder.probe, mode: .probe,
@@ -332,12 +335,27 @@ final class AppState: ObservableObject {
         connecting = true
         connectStatus = "Adding “\(name)” to \(kind.displayName)…"
         defer { connecting = false }
+        if kind == .claude, let servers = await claudeServers(binary: binary),
+           let hit = servers.first(where: { $0.state == .connected && $0.displayName.lowercased() == name.lowercased() }) {
+            connectStatus = "\(hit.displayName) is already connected (as “\(hit.name)”). Nothing to add."
+            return
+        }
         do {
-            let result = try await ProcessRunner.run(executable: binary,
+            var result = try await ProcessRunner.run(executable: binary,
                                                      args: kind.mcpAddArgs(name: name, url: url),
                                                      cwd: Paths.work, timeout: 60, logName: "mcp-add-\(name)")
+            var replaced = false
+            // Claude Code refuses to overwrite an entry with the same name; swap it for the new URL.
+            if kind == .claude, result.status != 0, (result.stderr + result.stdout).contains("already exists") {
+                _ = try await ProcessRunner.run(executable: binary, args: ["mcp", "remove", "--scope", "user", name],
+                                                cwd: Paths.work, timeout: 60, logName: "mcp-remove-\(name)")
+                result = try await ProcessRunner.run(executable: binary,
+                                                     args: kind.mcpAddArgs(name: name, url: url),
+                                                     cwd: Paths.work, timeout: 60, logName: "mcp-add-\(name)")
+                replaced = true
+            }
             if result.status == 0 {
-                connectStatus = kind.mcpAuthHint(name: name)
+                connectStatus = (replaced ? "Replaced the old “\(name)” entry. " : "") + kind.mcpAuthHint(name: name)
             } else {
                 let tail = (result.stderr + result.stdout).split(separator: "\n").suffix(3).joined(separator: " ")
                 connectStatus = "Couldn't add it (exit \(result.status)). \(tail)"
@@ -345,6 +363,15 @@ final class AppState: ObservableObject {
         } catch {
             connectStatus = error.localizedDescription
         }
+    }
+
+    /// `claude mcp list`, parsed; nil if it fails or prints no servers.
+    private func claudeServers(binary: String) async -> [MCPServerStatus]? {
+        guard let r = try? await ProcessRunner.run(executable: binary, args: ["mcp", "list"],
+                                                   cwd: Paths.work, timeout: 90, logName: "mcp-list"),
+              r.status == 0 else { return nil }
+        let servers = MCPList.parse(r.stdout + "\n" + r.stderr)
+        return servers.isEmpty ? nil : servers
     }
 
     private func runAgent(_ runner: AgentRunner, prompt: String, mode: AgentRunner.Mode,

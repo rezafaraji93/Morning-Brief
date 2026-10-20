@@ -46,17 +46,28 @@ enum Res {
 struct StoredBrief: Identifiable, Hashable {
     let day: String      // yyyy-MM-dd
     let htmlURL: URL
+    var headline: String? = nil
+    /// When the brief's data last changed; the panel reloads its view when this moves.
+    var modified: Date = .distantPast
     var id: String { day }
 
-    var displayName: String {
+    private var date: Date? {
         let parse = DateFormatter()
         parse.locale = Locale(identifier: "en_US_POSIX")
         parse.dateFormat = "yyyy-MM-dd"
-        guard let date = parse.date(from: day) else { return day }
+        return parse.date(from: day)
+    }
+
+    private func formatted(_ format: String) -> String? {
+        guard let date else { return nil }
         let out = DateFormatter()
-        out.dateFormat = "EEEE, MMM d"
+        out.dateFormat = format
         return out.string(from: date)
     }
+
+    var displayName: String { formatted("EEEE, MMM d") ?? day }
+    var weekdayShort: String { formatted("EEE")?.uppercased() ?? "" }
+    var dayOfMonth: String { formatted("d") ?? "" }
 }
 
 enum BriefStore {
@@ -91,6 +102,28 @@ enum BriefStore {
             .map { StoredBrief(day: $0.deletingPathExtension().lastPathComponent, htmlURL: $0) }
             .sorted { $0.day > $1.day }
             .prefix(limit)
-            .map { $0 }
+            .map { b in
+                var b = b
+                let json = jsonURL(day: b.day)
+                if let data = try? Data(contentsOf: json),
+                   let brief = try? Brief.decoder.decode(Brief.self, from: data) {
+                    b.headline = brief.headline
+                }
+                let attrs = (try? FileManager.default.attributesOfItem(atPath: json.path))
+                    ?? (try? FileManager.default.attributesOfItem(atPath: b.htmlURL.path))
+                b.modified = attrs?[.modificationDate] as? Date ?? .distantPast
+                return b
+            }
+    }
+
+    /// Re-renders a stored brief with the current template, so older briefs pick up design changes.
+    /// Falls back to the saved page when its JSON is missing or no longer decodes.
+    static func rerender(_ b: StoredBrief, buttons: Bool) -> URL {
+        if let data = try? Data(contentsOf: jsonURL(day: b.day)),
+           let brief = try? Brief.decoder.decode(Brief.self, from: data),
+           let rendered = try? BriefRenderer.render(brief, buttons: buttons) {
+            try? rendered.html.write(to: b.htmlURL, atomically: true, encoding: .utf8)
+        }
+        return b.htmlURL
     }
 }

@@ -181,13 +181,88 @@ struct KnownTool: Identifiable, Hashable {
     var id: String { name }
 
     static let catalog: [KnownTool] = [
-        KnownTool(name: "linear", url: "https://mcp.linear.app/sse"),
+        KnownTool(name: "linear", url: "https://mcp.linear.app/mcp"),
         KnownTool(name: "notion", url: "https://mcp.notion.com/mcp"),
-        KnownTool(name: "asana", url: "https://mcp.asana.com/sse"),
-        KnownTool(name: "atlassian", url: "https://mcp.atlassian.com/v1/sse"),
+        KnownTool(name: "asana", url: "https://mcp.asana.com/v2/mcp"),
+        KnownTool(name: "atlassian", url: "https://mcp.atlassian.com/v1/mcp"),
         KnownTool(name: "github", url: "https://api.githubcopilot.com/mcp/"),
         KnownTool(name: "sentry", url: "https://mcp.sentry.dev/mcp"),
     ]
+}
+
+/// One server row from `claude mcp list`.
+struct MCPServerStatus {
+    enum State { case connected, needsAuth, failed, other }
+    let name: String     // as configured, e.g. "claude.ai Linear" or "plugin:slack:slack"
+    let state: State
+
+    /// "claude.ai Linear" → "Linear", "plugin:slack:slack" → "Slack".
+    var displayName: String {
+        var n = name
+        if n.hasPrefix("claude.ai ") { n = String(n.dropFirst("claude.ai ".count)) }
+        if n.hasPrefix("plugin:"), let last = n.split(separator: ":").last { n = String(last) }
+        if n == n.lowercased(), let first = n.first { n = first.uppercased() + n.dropFirst() }
+        return n
+    }
+}
+
+/// Reads Claude Code's own MCP health check. A headless `claude -p` run starts before claude.ai
+/// connectors finish connecting, so asking the model which tools it has under-reports them.
+enum MCPList {
+    /// Parses lines like `claude.ai Linear: https://mcp.linear.app/mcp - ✔ Connected`.
+    static func parse(_ output: String) -> [MCPServerStatus] {
+        var servers: [MCPServerStatus] = []
+        for line in output.split(separator: "\n").map(String.init) {
+            guard let colon = line.range(of: ": "),
+                  let dash = line.range(of: " - ", options: .backwards),
+                  colon.upperBound <= dash.lowerBound else { continue }
+            let name = String(line[..<colon.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let status = line[dash.upperBound...].lowercased()
+            guard !name.isEmpty, !name.hasPrefix("[") else { continue }
+            let state: MCPServerStatus.State
+            if status.contains("failed") { state = .failed }
+            else if status.contains("needs auth") { state = .needsAuth }
+            else if status.contains("connected") { state = .connected }
+            else { state = .other }
+            servers.append(MCPServerStatus(name: name, state: state))
+        }
+        return servers
+    }
+
+    private static let roles: [(role: String, keywords: [String])] = [
+        ("calendar", ["calendar", "cal.com", "outlook"]),
+        ("chat", ["slack", "teams", "discord", "mattermost"]),
+        ("email", ["gmail", "mail", "outlook"]),
+        ("meeting notes", ["granola", "fireflies", "otter", "fathom", "tldv", "read.ai"]),
+        ("task tracker or docs", ["linear", "notion", "jira", "atlassian", "confluence", "asana",
+                                  "clickup", "github", "gitlab", "trello", "monday", "drive"]),
+    ]
+
+    /// One line per brief role, then anything that needs a sign-in or is broken.
+    static func summary(_ servers: [MCPServerStatus]) -> String {
+        let connected = servers.filter { $0.state == .connected }
+        let connectedNames = Set(connected.map { $0.displayName.lowercased() })
+        var lines: [String] = []
+        for (role, keywords) in roles {
+            var names: [String] = []
+            for s in connected where keywords.contains(where: { s.name.lowercased().contains($0) }) {
+                if !names.contains(s.displayName) { names.append(s.displayName) }
+            }
+            lines.append("\(role): " + (names.isEmpty ? "not connected" : names.joined(separator: ", ")))
+        }
+        var needsAuth: [String] = []
+        for s in servers where s.state == .needsAuth && !connectedNames.contains(s.displayName.lowercased()) {
+            if !needsAuth.contains(s.displayName) { needsAuth.append(s.displayName) }
+        }
+        if !needsAuth.isEmpty {
+            lines.append("needs sign-in: \(needsAuth.joined(separator: ", ")) (open Terminal, run `claude`, type /mcp)")
+        }
+        let failed = servers.filter { $0.state == .failed }.map(\.name)
+        if !failed.isEmpty {
+            lines.append("not working: \(failed.joined(separator: ", ")) (check its URL, or remove it with `claude mcp remove <name>`)")
+        }
+        return lines.joined(separator: "\n")
+    }
 }
 
 enum AgentDetector {
