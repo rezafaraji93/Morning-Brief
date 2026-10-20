@@ -44,8 +44,9 @@ enum PromptBuilder {
         if !watch.isEmpty {
             channelSteps += """
 
-               - Watched channels (\(watch.joined(separator: ", "))): read every message and thread reply since \
-            \(since), up to the ~150 most recent per channel. Keep only what concerns \(who): messages that name them \
+               - Watched channels (\(watch.joined(separator: ", "))): for each channel, fetch its messages since \
+            \(since) with a channel read (not a search), up to the ~150 most recent, plus the replies of threads that \
+            matter. Every listed channel gets read. Keep only what concerns \(who): messages that name them \
             or their work (features, projects, PRs, tickets or experiments they built or own; use About and what \
             their own recent messages and meeting notes show), threads they're in, decisions that change their work, \
             and asks to everyone with a deadline or action (a survey, a sign-up, an office closure). Drop everything \

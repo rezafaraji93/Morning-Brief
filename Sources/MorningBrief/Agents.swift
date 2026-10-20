@@ -31,15 +31,20 @@ struct AgentRunner {
     }
 
     func invocation(prompt: String, mode: Mode, claudePermissionMode: String = "auto") throws -> Invocation {
-        let model = settings.model.trimmingCharacters(in: .whitespaces)
+        let model = kind.resolveModel(settings.model)
         let extra = ArgSplitter.split(settings.extraArgs)
         switch kind {
         case .claude:
-            var a = ["-p", prompt, "--output-format", "json", "--no-session-persistence"]
+            // A brief streams one JSON event per line, so the panel can show what's being read;
+            // the final "result" event is the same envelope the plain json format prints.
+            var a = ["-p", prompt, "--no-session-persistence"]
+            a += mode == .brief ? ["--output-format", "stream-json", "--verbose"] : ["--output-format", "json"]
             if !extra.contains("--permission-mode") && !extra.contains("--dangerously-skip-permissions") {
                 a += ["--permission-mode", claudePermissionMode]
             }
-            a += ["--disallowedTools", "Bash", "Edit", "Write", "NotebookEdit"]
+            // Read stays allowed: Claude Code spills large tool results to disk and reads them back.
+            a += ["--disallowedTools", "Bash", "Edit", "Write", "MultiEdit", "NotebookEdit",
+                  "Agent", "Task", "Glob", "Grep", "WebFetch", "WebSearch"]
             if let schema = Self.schemaName(mode) {
                 a += ["--json-schema", try Res.string(schema, "json")]
             }
@@ -111,7 +116,14 @@ struct AgentRunner {
     }
 
     private func jsonObject(_ s: String) -> [String: Any]? {
-        // The envelope is the last JSON object printed; tolerate log lines before it.
+        // The envelope is the last JSON object printed. Streamed output is one object per line and can
+        // run to megabytes, so try whole lines from the end first and scan for braces only as a fallback.
+        for line in s.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("{"), t.hasSuffix("}"), let d = t.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
+            return o
+        }
         for candidate in JSONExtract.objects(in: s).reversed() {
             if let d = candidate.data(using: .utf8),
                let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
@@ -120,38 +132,161 @@ struct AgentRunner {
         }
         return nil
     }
+
+    /// What one line of live output says the agent is doing, if anything.
+    func event(stream: ProcessStream, line: String) -> AgentEvent? {
+        switch kind {
+        case .claude:
+            // Only assistant and system events matter; tool results (type "user") can be huge, so
+            // they're ruled out by their prefix before any parsing.
+            let head = line.prefix(40)
+            guard stream == .stdout, head.hasPrefix("{"),
+                  head.contains("\"assistant\"") || head.contains("\"system\""),
+                  let d = line.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
+            if o["type"] as? String == "system" {
+                return o["subtype"] as? String == "init" ? .started : nil
+            }
+            guard let message = o["message"] as? [String: Any],
+                  let content = message["content"] as? [[String: Any]] else { return nil }
+            if let tool = content.first(where: { $0["type"] as? String == "tool_use" }),
+               let name = tool["name"] as? String {
+                return name == "StructuredOutput" ? .writing : .tool(name)
+            }
+            return content.contains { $0["type"] as? String == "text" } ? .thinking : nil
+        case .codex:
+            // "mcp: linear/get_user started"
+            guard stream == .stderr, line.hasPrefix("mcp: "), line.hasSuffix(" started") else { return nil }
+            return .tool(String(line.dropFirst(5).dropLast(8)))
+        case .gemini:
+            return nil
+        }
+    }
+
+    /// Tokens, cost and time for a finished run, as far as the CLI reports them.
+    func usage(stdout: String, stderr: String, seconds: Int, toolCalls: Int) -> BriefUsage? {
+        var u = BriefUsage(agent: kind.displayName, totalTokens: 0, durationSeconds: seconds, toolCalls: toolCalls)
+        switch kind {
+        case .claude:
+            guard let o = jsonObject(stdout) else { return nil }
+            var input = 0, output = 0, read = 0, write = 0, cost = 0.0, model: String?
+            if let models = o["modelUsage"] as? [String: [String: Any]], !models.isEmpty {
+                for (name, m) in models {
+                    model = model ?? name
+                    input += m["inputTokens"] as? Int ?? 0
+                    output += m["outputTokens"] as? Int ?? 0
+                    read += m["cacheReadInputTokens"] as? Int ?? 0
+                    write += m["cacheCreationInputTokens"] as? Int ?? 0
+                    cost += m["costUSD"] as? Double ?? 0
+                }
+            } else if let usage = o["usage"] as? [String: Any] {
+                input = usage["input_tokens"] as? Int ?? 0
+                output = usage["output_tokens"] as? Int ?? 0
+                read = usage["cache_read_input_tokens"] as? Int ?? 0
+                write = usage["cache_creation_input_tokens"] as? Int ?? 0
+                cost = o["total_cost_usd"] as? Double ?? 0
+            } else {
+                return nil
+            }
+            u.model = model
+            u.inputTokens = input
+            u.outputTokens = output
+            u.cacheReadTokens = read
+            u.cacheWriteTokens = write
+            u.costUSD = cost > 0 ? cost : nil
+            u.totalTokens = input + output + read + write
+            if let ms = o["duration_ms"] as? Int { u.durationSeconds = ms / 1000 }
+            return u
+        case .codex:
+            // The run ends with "tokens used" and the number on the next line, grouped per the locale.
+            let lines = stderr.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard let i = lines.lastIndex(of: "tokens used"), i + 1 < lines.count else { return nil }
+            let digits = lines[i + 1].filter(\.isNumber)
+            guard let n = Int(digits), n > 0 else { return nil }
+            u.totalTokens = n
+            u.model = settings.model.isEmpty ? nil : settings.model
+            return u
+        case .gemini:
+            // {"stats":{"models":{"<model>":{"tokens":{"prompt":…,"candidates":…,"total":…}}}}}
+            guard let o = jsonObject(stdout), let stats = o["stats"] as? [String: Any],
+                  let models = stats["models"] as? [String: [String: Any]] else { return nil }
+            var total = 0, prompt = 0, out = 0
+            for (name, m) in models {
+                u.model = u.model ?? name
+                let t = m["tokens"] as? [String: Any] ?? [:]
+                total += t["total"] as? Int ?? 0
+                prompt += t["prompt"] as? Int ?? 0
+                out += t["candidates"] as? Int ?? 0
+            }
+            guard total > 0 else { return nil }
+            u.totalTokens = total
+            u.inputTokens = prompt
+            u.outputTokens = out
+            return u
+        }
+    }
 }
 
-/// A model choice offered in the Settings dropdown. Value "" means the agent's default.
+/// A model choice offered in the Settings dropdown.
 struct ModelOption: Identifiable, Hashable {
     let value: String
     let label: String
+    /// One or two sentences on what picking it means, shown under the dropdown.
+    let note: String
     var id: String { value }
 }
 
 extension AgentKind {
-    /// A short, curated list per agent. "Agent default" is always right; the rest are the
-    /// commonly used names as of early 2026. Anything else goes through "Custom…".
+    /// Stored model value meaning "let the CLI pick": no model flag is passed.
+    static let cliDefault = "default"
+
+    /// The model a brief runs on when Settings holds "" (the app's recommendation).
+    var recommendedModel: String { modelOptions[0].value }
+
+    /// "" → the recommendation, "default" → nil (no flag), anything else as typed.
+    func resolveModel(_ stored: String) -> String {
+        let m = stored.trimmingCharacters(in: .whitespaces)
+        if m.isEmpty { return recommendedModel }
+        if m == Self.cliDefault { return "" }
+        return m
+    }
+
+    /// Recommended first. Claude's notes come from timed runs of the same brief over eight Slack
+    /// channels; Codex's and Gemini's rank the vendors' own descriptions and haven't been measured here.
     var modelOptions: [ModelOption] {
         switch self {
         case .claude:
             return [
-                ModelOption(value: "", label: "Agent default (recommended)"),
-                ModelOption(value: "opus", label: "Opus — most capable"),
-                ModelOption(value: "sonnet", label: "Sonnet — balanced"),
-                ModelOption(value: "haiku", label: "Haiku — fastest"),
+                ModelOption(value: "opus", label: "Opus — recommended",
+                            note: "The full brief: what needs you, what got resolved, meeting commitments and nudges. About 4 minutes and $2 a day."),
+                ModelOption(value: "sonnet", label: "Sonnet — fastest",
+                            note: "Accurate on what needs you, but delivers less: it tends to skip the resolved items, meeting commitments and nudges. About 1½ minutes and 50¢."),
+                ModelOption(value: "fable", label: "Fable — more than a brief needs",
+                            note: "The same brief as Opus, in twice the time and at three times the cost."),
+                ModelOption(value: "haiku", label: "Haiku — cheapest",
+                            note: "Reads everything for about 10¢ and 2 minutes, but the details are thinner: it missed decisions inside threads and a due date that Opus found."),
+                ModelOption(value: AgentKind.cliDefault, label: "Claude Code's own default",
+                            note: "Whatever `claude` is set to, so it changes when you run /model there."),
             ]
         case .codex:
             return [
-                ModelOption(value: "", label: "Agent default (recommended)"),
-                ModelOption(value: "gpt-5.1-codex", label: "GPT-5.1 Codex"),
-                ModelOption(value: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini — faster"),
+                ModelOption(value: "gpt-5.6-terra", label: "GPT-5.6 Terra — recommended",
+                            note: "OpenAI's balanced model, the best bet for a full brief. Not measured here yet."),
+                ModelOption(value: "gpt-6-luna", label: "GPT-6 Luna — fastest",
+                            note: "Codex's default: fast and cheap, meant for easier tasks. Expect a thinner brief."),
+                ModelOption(value: "gpt-5.6-luna", label: "GPT-5.6 Luna — older, fast",
+                            note: "An older fast model. Not measured here."),
+                ModelOption(value: AgentKind.cliDefault, label: "Codex's own default",
+                            note: "Whatever `codex` is set to."),
             ]
         case .gemini:
             return [
-                ModelOption(value: "", label: "Agent default (recommended)"),
-                ModelOption(value: "gemini-2.5-pro", label: "Gemini 2.5 Pro"),
-                ModelOption(value: "gemini-2.5-flash", label: "Gemini 2.5 Flash — faster"),
+                ModelOption(value: "gemini-2.5-pro", label: "Gemini 2.5 Pro — recommended",
+                            note: "Google's capable model, the best bet for a full brief. Not measured here yet."),
+                ModelOption(value: "gemini-2.5-flash", label: "Gemini 2.5 Flash — fastest",
+                            note: "Fast and cheap. Expect a thinner brief."),
+                ModelOption(value: AgentKind.cliDefault, label: "Gemini CLI's own default",
+                            note: "Whatever `gemini` is set to."),
             ]
         }
     }

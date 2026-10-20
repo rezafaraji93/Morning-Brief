@@ -18,15 +18,17 @@ final class AppState: ObservableObject {
             guard settings != oldValue else { return }
             settings.save()
             if settings.binaryOverride != oldValue.binaryOverride || settings.agent != oldValue.agent {
-                refreshAgents()
                 // Results from the previous agent would read as if they were this one's.
                 probeResult = ""
                 connectStatus = ""
-                servers = []
+                invalidateServers()
+                scheduleAgentRefresh()
             }
         }
     }
     @Published private(set) var status: Status = .idle
+    /// What the agent is doing while a brief is being written, from its live output.
+    @Published private(set) var progress: RunProgress?
     @Published private(set) var agents: [AgentKind: String] = [:]
     @Published private(set) var recent: [StoredBrief] = []
     @Published var probeResult: String = ""
@@ -49,6 +51,30 @@ final class AppState: ObservableObject {
     private let lastAttemptKey = "MorningBrief.lastAutoAttemptDay"
     private let prefillAttemptedKey = "MorningBrief.prefillAttempted"
 
+    /// Detection runs off the main thread; a result is dropped when a newer detection has started.
+    private var detectGeneration = 0
+    private var pendingRefresh: Task<Void, Never>?
+    /// When `servers` was last read from the agent, so Settings doesn't re-run the check on every open.
+    private var serversFetchedAt: Date?
+
+    /// A scheduled run that failed gets another go, so a Mac that woke before Wi-Fi did doesn't lose the day.
+    private struct AutoRetry { let day: String; var failures: Int; var after: Date }
+    private var autoRetry: AutoRetry?
+    private static let maxAutoAttempts = 3
+    private static let retryDelay: TimeInterval = 30 * 60
+
+    private static let clock: DateFormatter = {
+        let f = DateFormatter()
+        f.timeStyle = .short
+        f.dateStyle = .none
+        return f
+    }()
+    private static let weekday: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEEE"
+        return f
+    }()
+
     private init() {
         settings = AppSettings.load()
         Paths.ensure()
@@ -59,6 +85,7 @@ final class AppState: ObservableObject {
 
     func start() {
         refreshAgents()
+        Task.detached(priority: .background) { Paths.prune() }
         if AppState.notificationsAvailable {
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         }
@@ -126,18 +153,38 @@ final class AppState: ObservableObject {
 
     // MARK: agents
 
+    /// Full detection at launch, including a fresh read of the login shell's PATH.
     func refreshAgents() {
-        let override = settings.binaryOverride
-        let preferred = settings.agent
-        Task.detached {
-            ShellEnv.resetCache()
-            let found = AgentDetector.detect(override: override, preferred: preferred)
-            await MainActor.run {
-                var map: [AgentKind: String] = [:]
-                for (k, p) in found { map[k] = p }
-                AppState.shared.agents = map
-            }
+        Task { await detectAgents(resetPath: true) }
+    }
+
+    /// Coalesces quick successive edits (typing a program path) into one detection, without
+    /// re-reading PATH: that only changes when something gets installed.
+    private func scheduleAgentRefresh() {
+        pendingRefresh?.cancel()
+        pendingRefresh = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.detectAgents(resetPath: false)
         }
+    }
+
+    @discardableResult
+    private func detectAgents(resetPath: Bool) async -> [AgentKind: String] {
+        detectGeneration += 1
+        let generation = detectGeneration
+        let override = settings.binaryOverride, preferred = settings.agent
+        let found = await Task.detached(priority: .userInitiated) { () -> [(AgentKind, String)] in
+            if resetPath { ShellEnv.resetCache() }
+            return AgentDetector.detect(override: override, preferred: preferred)
+        }.value
+        var map: [AgentKind: String] = [:]
+        for (k, p) in found { map[k] = p }
+        if generation == detectGeneration, map != agents {
+            agents = map
+            invalidateServers()
+        }
+        return map
     }
 
     /// "Re-detect agents" in Settings: runs detection again and says what changed.
@@ -147,15 +194,8 @@ final class AppState: ObservableObject {
         detectNotice = nil
         defer { detecting = false }
         let before = agents
-        let override = settings.binaryOverride, preferred = settings.agent
-        let found = await Task.detached { () -> [(AgentKind, String)] in
-            ShellEnv.resetCache()
-            return AgentDetector.detect(override: override, preferred: preferred)
-        }.value
-        var map: [AgentKind: String] = [:]
-        for (k, p) in found { map[k] = p }
-        agents = map
-        detectNotice = Self.detectionNotice(before: before, after: map)
+        let after = await detectAgents(resetPath: true)
+        detectNotice = Self.detectionNotice(before: before, after: after)
     }
 
     nonisolated static func detectionNotice(before: [AgentKind: String], after: [AgentKind: String]) -> Notice {
@@ -206,11 +246,7 @@ final class AppState: ObservableObject {
     /// Waits for first-launch agent detection if it hasn't finished yet.
     private func ensureAgentsDetected() async {
         guard agents.isEmpty else { return }
-        let override = settings.binaryOverride, preferred = settings.agent
-        let found = await Task.detached { AgentDetector.detect(override: override, preferred: preferred) }.value
-        var map: [AgentKind: String] = [:]
-        for (k, p) in found { map[k] = p }
-        agents = map
+        await detectAgents(resetPath: false)
     }
 
     // MARK: schedule
@@ -225,20 +261,19 @@ final class AppState: ObservableObject {
 
     func nextRunDescription() -> String {
         let cal = Calendar.current
+        let today = BriefStore.dayKey()
+        if todayBrief == nil, let r = autoRetry, r.day == today {
+            return "today at \(Self.clock.string(from: r.after))"
+        }
         var day = Date()
         for _ in 0..<8 {
             if isRunDay(day), let t = scheduledTime(on: day),
                t > Date() || (cal.isDateInToday(day) && todayBrief == nil
-                              && UserDefaults.standard.string(forKey: lastAttemptKey) != BriefStore.dayKey()) {
-                let f = DateFormatter()
-                f.timeStyle = .short
-                f.dateStyle = .none
-                let time = f.string(from: t)
+                              && UserDefaults.standard.string(forKey: lastAttemptKey) != today) {
+                let time = Self.clock.string(from: t)
                 if cal.isDateInToday(day) { return t > Date() ? "today at \(time)" : "soon" }
                 if cal.isDateInTomorrow(day) { return "tomorrow at \(time)" }
-                let w = DateFormatter()
-                w.dateFormat = "EEEE"
-                return "\(w.string(from: day)) at \(time)"
+                return "\(Self.weekday.string(from: day)) at \(time)"
             }
             day = cal.date(byAdding: .day, value: 1, to: day) ?? day
         }
@@ -251,9 +286,11 @@ final class AppState: ObservableObject {
         guard !isRunning,
               isRunDay(now),
               let t = scheduledTime(on: now), now >= t,
-              !BriefStore.exists(day: today),
-              UserDefaults.standard.string(forKey: lastAttemptKey) != today
+              !BriefStore.exists(day: today)
         else { return }
+        let attempted = UserDefaults.standard.string(forKey: lastAttemptKey) == today
+        let retryDue = autoRetry.map { $0.day == today && now >= $0.after } ?? false
+        guard !attempted || retryDue else { return }
         UserDefaults.standard.set(today, forKey: lastAttemptKey)
         Task { await generate(manual: false) }
     }
@@ -265,31 +302,54 @@ final class AppState: ObservableObject {
         await ensureAgentsDetected()
         // Another generate() may have started while we were awaiting detection.
         guard !isRunning else { return }
+        let day = BriefStore.dayKey()
         guard let resolved = resolvedAgent() else {
-            fail(BriefError.noAgent.localizedDescription, notify: !manual)
+            handleFailure(BriefError.noAgent.localizedDescription, manual: manual, day: day)
             return
         }
         let (kind, binary) = resolved
         status = .running(agent: kind.displayName, since: Date())
+        progress = RunProgress(copy: ProgressCopy.started(kind.displayName))
+        defer { progress = nil }
         let snapshot = settings
-        let day = BriefStore.dayKey()
         do {
             let prompt = try PromptBuilder.build(settings: snapshot)
             let runner = AgentRunner(kind: kind, binary: binary, settings: snapshot)
-            let text = try await runAgent(runner, prompt: prompt, mode: .brief, logName: "\(day)-\(kind.rawValue)")
-            let brief = try JSONExtract.brief(from: text)
+            let out = try await runAgent(runner, prompt: prompt, mode: .brief, logName: "\(day)-\(kind.rawValue)",
+                                         onLine: { stream, line in
+                guard let event = runner.event(stream: stream, line: line) else { return }
+                Task { @MainActor in AppState.shared.note(event) }
+            })
+            let brief = try JSONExtract.brief(from: out.text)
             let rendered = try BriefRenderer.render(brief, buttons: snapshot.includeButtons)
-            let url = try BriefStore.save(html: rendered.html, json: rendered.json, day: day)
+            let usage = runner.usage(stdout: out.stdout, stderr: out.stderr, seconds: out.seconds,
+                                     toolCalls: progress?.toolCalls ?? 0)
+            let url = try BriefStore.save(html: rendered.html, json: rendered.json, usage: usage, day: day)
             recent = BriefStore.recent()
             status = .idle
+            autoRetry = nil
             notifyReady(brief: brief, url: url)
         } catch {
-            fail(error.localizedDescription, notify: !manual)
+            handleFailure(error.localizedDescription, manual: manual, day: day)
         }
+    }
+
+    private func note(_ event: AgentEvent) {
+        guard var p = progress else { return }
+        switch event {
+        case .started: break
+        case .tool(let name):
+            p.toolCalls += 1
+            p.copy = ProgressCopy.line(forTool: name, index: p.toolCalls)
+        case .thinking: p.copy = ProgressCopy.thinking(index: p.toolCalls)
+        case .writing: p.copy = ProgressCopy.writing
+        }
+        progress = p
     }
 
     func probeConnections() async {
         guard !probing else { return }
+        await ensureAgentsDetected()
         guard let resolved = resolvedAgent() else {
             probeResult = BriefError.noAgent.localizedDescription
             return
@@ -299,16 +359,16 @@ final class AppState: ObservableObject {
         probeResult = "Asking \(kind.displayName)…"
         defer { probing = false }
         if let found = await configuredServers(kind: kind, binary: binary) {
-            servers = found
+            setServers(found)
             probeResult = "\(kind.displayName):\n" + MCPList.summary(found, kind: kind)
             return
         }
         do {
             let runner = AgentRunner(kind: kind, binary: binary, settings: settings)
-            let text = try await runAgent(runner, prompt: PromptBuilder.probe, mode: .probe,
-                                          logName: "probe-\(kind.rawValue)", timeout: 180)
-            let found = MCPList.servers(fromToolNames: text)
-            servers = found
+            let out = try await runAgent(runner, prompt: PromptBuilder.probe, mode: .probe,
+                                         logName: "probe-\(kind.rawValue)", timeout: 180)
+            let found = MCPList.servers(fromToolNames: out.text)
+            setServers(found)
             probeResult = "\(kind.displayName):\n" + MCPList.summary(found, kind: kind)
         } catch {
             probeResult = error.localizedDescription
@@ -335,9 +395,9 @@ final class AppState: ObservableObject {
         defer { suggestingChannels = false }
         do {
             let runner = AgentRunner(kind: kind, binary: binary, settings: settings)
-            let text = try await runAgent(runner, prompt: PromptBuilder.suggestChannels(settings: settings),
-                                          mode: .channels, logName: "channels-\(kind.rawValue)", timeout: 420)
-            guard let found = JSONExtract.objects(in: text).lazy.compactMap({
+            let out = try await runAgent(runner, prompt: PromptBuilder.suggestChannels(settings: settings),
+                                         mode: .channels, logName: "channels-\(kind.rawValue)", timeout: 420)
+            guard let found = JSONExtract.objects(in: out.text).lazy.compactMap({
                 $0.data(using: .utf8).flatMap { try? JSONDecoder().decode(ChannelSuggestion.self, from: $0) }
             }).first else {
                 channelsNotice = Notice(tone: .warning, text: "\(kind.displayName) didn't return a usable list. Try again, or type the channels in.")
@@ -392,10 +452,10 @@ final class AppState: ObservableObject {
         defer { personalizing = false }
         do {
             let runner = AgentRunner(kind: kind, binary: binary, settings: settings)
-            let text = try await runAgent(runner, prompt: PromptBuilder.personalize, mode: .personalize,
-                                          logName: "personalize-\(kind.rawValue)", timeout: 180)
+            let out = try await runAgent(runner, prompt: PromptBuilder.personalize, mode: .personalize,
+                                         logName: "personalize-\(kind.rawValue)", timeout: 180)
             var parsed: Personalization?
-            for candidate in JSONExtract.objects(in: text) {
+            for candidate in JSONExtract.objects(in: out.text) {
                 if let d = candidate.data(using: .utf8),
                    let p = try? JSONDecoder().decode(Personalization.self, from: d) {
                     parsed = p
@@ -436,8 +496,10 @@ final class AppState: ObservableObject {
         guard !connecting else { return }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let url = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, url.lowercased().hasPrefix("https://") else {
-            connectStatus = "A connection needs a short name and an https:// URL."
+        // The name becomes a config key and part of a log file name, so keep it plain.
+        let plainName = name.range(of: "^[a-z0-9][a-z0-9_-]{0,63}$", options: .regularExpression) != nil
+        guard plainName, url.lowercased().hasPrefix("https://") else {
+            connectStatus = "A connection needs a short name (lowercase letters, numbers, - or _) and an https:// URL."
             return
         }
         await ensureAgentsDetected()
@@ -452,7 +514,7 @@ final class AppState: ObservableObject {
             : "Adding “\(name)” to \(kind.displayName)…"
         defer { connecting = false }
         if let found = await configuredServers(kind: kind, binary: binary) {
-            servers = found
+            setServers(found)
             let known = KnownTool.catalog.first { $0.name == name }
             if let hit = known?.connectedServer(in: found)
                 ?? found.first(where: { $0.state == .connected && $0.displayName.lowercased() == name.lowercased() }) {
@@ -476,7 +538,7 @@ final class AppState: ObservableObject {
                                                      cwd: Paths.work, timeout: 60, logName: "mcp-add-\(name)")
                 replaced = true
             }
-            if result.status == 0 { await refreshServers() }
+            if result.status == 0 { await refreshServers(maxAge: 0) }
             if result.status == 0, (result.stdout + result.stderr).contains("Successfully logged in") {
                 connectStatus = "Added “\(name)” to \(kind.displayName) and signed in. The next brief can use it."
             } else if result.status == 0 {
@@ -490,13 +552,24 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// `claude mcp list`, parsed; nil if it fails or prints no servers.
-    /// Re-reads the active agent's servers without asking a model (agents with a list command only).
-    func refreshServers() async {
+    /// Re-reads the active agent's servers without asking a model (agents with a list command only),
+    /// unless they were read less than `maxAge` ago.
+    func refreshServers(maxAge: TimeInterval = 60) async {
+        if let t = serversFetchedAt, Date().timeIntervalSince(t) < maxAge { return }
         await ensureAgentsDetected()
         guard let (kind, binary) = resolvedAgent(),
               let found = await configuredServers(kind: kind, binary: binary) else { return }
+        setServers(found)
+    }
+
+    private func setServers(_ found: [MCPServerStatus]) {
         servers = found
+        serversFetchedAt = Date()
+    }
+
+    private func invalidateServers() {
+        servers = []
+        serversFetchedAt = nil
     }
 
     /// The agent's own list of MCP servers and their state (`claude mcp list`, `codex mcp list --json`).
@@ -516,19 +589,28 @@ final class AppState: ObservableObject {
         return servers.isEmpty ? nil : servers
     }
 
+    struct AgentOutput {
+        let text: String
+        let stdout: String
+        let stderr: String
+        let seconds: Int
+    }
+
     private func runAgent(_ runner: AgentRunner, prompt: String, mode: AgentRunner.Mode,
-                          logName: String, timeout: TimeInterval? = nil) async throws -> String {
+                          logName: String, timeout: TimeInterval? = nil,
+                          onLine: (@Sendable (ProcessStream, String) -> Void)? = nil) async throws -> AgentOutput {
         let limit = timeout ?? TimeInterval(max(2, settings.timeoutMinutes) * 60)
+        let started = Date()
         var inv = try runner.invocation(prompt: prompt, mode: mode)
         var result = try await ProcessRunner.run(executable: runner.binary, args: inv.args, cwd: Paths.work,
-                                                 timeout: limit, logName: logName)
+                                                 timeout: limit, logName: logName, onLine: onLine)
         // Older Claude Code builds or some plans don't offer the "auto" permission mode.
         if runner.kind == .claude, result.status != 0, !result.timedOut,
            result.stderr.localizedCaseInsensitiveContains("permission-mode") ||
            result.stderr.localizedCaseInsensitiveContains("permission mode") {
             inv = try runner.invocation(prompt: prompt, mode: mode, claudePermissionMode: "bypassPermissions")
             result = try await ProcessRunner.run(executable: runner.binary, args: inv.args, cwd: Paths.work,
-                                                 timeout: limit, logName: logName + "-retry")
+                                                 timeout: limit, logName: logName + "-retry", onLine: onLine)
         }
         if result.timedOut { throw BriefError.timedOut(Int(limit / 60)) }
         if let err = runner.reportedError(stdout: result.stdout) { throw BriefError.agentFailed(err) }
@@ -537,12 +619,23 @@ final class AppState: ObservableObject {
             let tail = result.stderr.split(separator: "\n").suffix(3).joined(separator: " ")
             throw BriefError.agentFailed("\(runner.kind.displayName) exited with code \(result.status). \(tail)")
         }
-        return text
+        return AgentOutput(text: text, stdout: result.stdout, stderr: result.stderr,
+                           seconds: Int(Date().timeIntervalSince(started)))
     }
 
-    private func fail(_ message: String, notify: Bool) {
-        status = .failed(message)
-        if notify {
+    /// A manual run just reports. A scheduled run gets two more tries half an hour apart, and the
+    /// notification goes out only when the last one has failed too.
+    private func handleFailure(_ message: String, manual: Bool, day: String) {
+        guard !manual else { status = .failed(message); return }
+        var retry = autoRetry?.day == day ? autoRetry! : AutoRetry(day: day, failures: 0, after: .distantPast)
+        retry.failures += 1
+        if retry.failures < Self.maxAutoAttempts {
+            retry.after = Date().addingTimeInterval(Self.retryDelay)
+            autoRetry = retry
+            status = .failed("\(message) Trying again at \(Self.clock.string(from: retry.after)).")
+        } else {
+            autoRetry = nil
+            status = .failed(message)
             post(title: "Morning brief didn't run", body: message, path: nil)
         }
     }

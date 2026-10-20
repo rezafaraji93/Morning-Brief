@@ -204,11 +204,9 @@ struct BriefPanel: View {
             PanelCard {
                 VStack(spacing: 14) {
                     ProgressView().controlSize(.regular)
-                    Text("Writing your brief")
-                        .font(Brand.font(18, .bold))
-                        .foregroundStyle(Brand.ink)
-                    StatusText()
+                    RunningCopy(size: 19)
                         .multilineTextAlignment(.center)
+                    RunningMeta()
                     Text("This takes a few minutes. You can close this panel; you'll get a notification when it's ready.")
                         .font(Brand.font(13))
                         .foregroundStyle(Brand.inkGrey)
@@ -318,6 +316,10 @@ struct BriefPanel: View {
                 StatusText()
             }
             Spacer()
+            if !showingSettings, let usage = shownBrief?.usage {
+                Text(usage.summary)
+                    .help(usage.detail)
+            }
         }
         .font(Brand.font(11.5))
         .foregroundStyle(Brand.inkGrey)
@@ -351,12 +353,46 @@ private struct StatusText: View {
     }
 }
 
+/// The live line from the agent's output ("Skimming your Slack…"), crossfading as it changes.
+private struct RunningCopy: View {
+    @EnvironmentObject var state: AppState
+    var size: CGFloat = 13
+
+    var body: some View {
+        let copy = state.progress?.copy ?? "Writing your brief…"
+        Text(copy)
+            .font(Brand.font(size, size > 15 ? .bold : .medium))
+            .foregroundStyle(Brand.ink)
+            .id(copy)
+            .transition(.opacity)
+            .animation(.easeInOut(duration: 0.25), value: copy)
+    }
+}
+
+/// "Claude Code · 1m 20s · 12 lookups", ticking while the panel is open.
+private struct RunningMeta: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            if case .running(let agent, let since) = state.status {
+                let seconds = Int(context.date.timeIntervalSince(since))
+                let calls = state.progress?.toolCalls ?? 0
+                Text("\(agent) · \(BriefUsage.duration(max(0, seconds)))" + (calls > 0 ? " · \(calls) lookups" : ""))
+                    .font(Brand.font(12.5))
+                    .foregroundStyle(Brand.inkSoft)
+            }
+        }
+    }
+}
+
 private struct RunningBanner: View {
     var body: some View {
         HStack(spacing: 10) {
             ProgressView().controlSize(.small)
-            StatusText()
+            RunningCopy()
             Spacer()
+            RunningMeta()
         }
         .padding(.horizontal, 14)
         .frame(height: 38)
@@ -510,6 +546,15 @@ struct BriefWebView: NSViewRepresentable {
         var loadedKey = ""
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            webView.alphaValue = 1
+        }
+
+        // Show whatever WebKit has, rather than an invisible view, when a load fails.
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            webView.alphaValue = 1
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             webView.alphaValue = 1
         }
 

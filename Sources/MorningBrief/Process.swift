@@ -114,6 +114,63 @@ struct RunResult {
     let logURL: URL
 }
 
+enum ProcessStream { case stdout, stderr }
+
+/// Follows a running process's output files and hands over each complete line, so the UI can say
+/// what the agent is doing. Lines arrive on a background queue.
+final class OutputTailer: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "MorningBrief.tail", qos: .utility)
+    private var timer: DispatchSourceTimer?
+    private var readers: [(stream: ProcessStream, handle: FileHandle, pending: Data)]
+    private let onLine: @Sendable (ProcessStream, String) -> Void
+
+    init?(stdout: URL, stderr: URL, onLine: @escaping @Sendable (ProcessStream, String) -> Void) {
+        guard let o = try? FileHandle(forReadingFrom: stdout),
+              let e = try? FileHandle(forReadingFrom: stderr) else { return nil }
+        readers = [(.stdout, o, Data()), (.stderr, e, Data())]
+        self.onLine = onLine
+    }
+
+    func start() {
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 0.5, repeating: 0.5)
+        t.setEventHandler { [weak self] in self?.drain() }
+        t.resume()
+        timer = t
+    }
+
+    /// Stops following and delivers what's left, including a last line with no newline.
+    func finish() {
+        timer?.cancel()
+        timer = nil
+        queue.sync {
+            drain()
+            for i in readers.indices {
+                if !readers[i].pending.isEmpty {
+                    onLine(readers[i].stream, String(decoding: readers[i].pending, as: UTF8.self))
+                    readers[i].pending = Data()
+                }
+                try? readers[i].handle.close()
+            }
+        }
+    }
+
+    private func drain() {
+        for i in readers.indices {
+            let fresh = readers[i].handle.readDataToEndOfFile()   // from where the last read stopped
+            guard !fresh.isEmpty else { continue }
+            readers[i].pending.append(fresh)
+            // Only whole lines are decoded, so a multi-byte character split across reads stays intact.
+            guard let cut = readers[i].pending.lastIndex(of: UInt8(ascii: "\n")) else { continue }
+            let whole = readers[i].pending[..<cut]
+            readers[i].pending = Data(readers[i].pending[(cut + 1)...])
+            for line in String(decoding: whole, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: true) {
+                onLine(readers[i].stream, String(line))
+            }
+        }
+    }
+}
+
 /// Runs a CLI with stdout/stderr redirected to files (not pipes): agents spawn MCP servers that can
 /// keep inherited pipes open after the parent exits, which would hang a pipe reader forever.
 enum ProcessRunner {
@@ -121,7 +178,8 @@ enum ProcessRunner {
                     args: [String],
                     cwd: URL,
                     timeout: TimeInterval,
-                    logName: String) async throws -> RunResult {
+                    logName: String,
+                    onLine: (@Sendable (ProcessStream, String) -> Void)? = nil) async throws -> RunResult {
         Paths.ensure()
         let outURL = Paths.logs.appendingPathComponent("\(logName).stdout.txt")
         let errURL = Paths.logs.appendingPathComponent("\(logName).stderr.txt")
@@ -140,6 +198,7 @@ enum ProcessRunner {
         p.standardError = errHandle
 
         let timedOut = TimeoutFlag()
+        let tailer = onLine.flatMap { OutputTailer(stdout: outURL, stderr: errURL, onLine: $0) }
         let status: Int32 = try await withCheckedThrowingContinuation { cont in
             p.terminationHandler = { proc in cont.resume(returning: proc.terminationStatus) }
             do {
@@ -149,6 +208,7 @@ enum ProcessRunner {
                 cont.resume(throwing: BriefError.agentFailed("Couldn't start \(executable): \(error.localizedDescription)"))
                 return
             }
+            tailer?.start()
             let pid = p.processIdentifier
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 guard p.isRunning else { return }
@@ -159,6 +219,7 @@ enum ProcessRunner {
                 }
             }
         }
+        tailer?.finish()
         try? outHandle.close()
         try? errHandle.close()
 

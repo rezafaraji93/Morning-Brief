@@ -35,12 +35,13 @@ struct SettingsView: View {
         return .claude
     }
 
+    /// "" in Settings means the recommended model, so the picker shows that option as chosen.
     private var modelSelection: Binding<String> {
         Binding(
             get: {
                 if customModel { return "custom" }
                 let m = state.settings.model
-                if m.isEmpty { return "" }
+                if m.isEmpty { return effectiveKind.recommendedModel }
                 return effectiveKind.modelOptions.contains(where: { $0.value == m }) ? m : "custom"
             },
             set: { v in
@@ -111,6 +112,7 @@ struct SettingsView: View {
             if customModel {
                 BrandField(placeholder: "Exact model name for \(effectiveKind.displayName)", text: $state.settings.model)
             }
+            Caption(modelNote)
             Caption(agentFooter)
         }
     }
@@ -144,10 +146,19 @@ struct SettingsView: View {
         AgentKind(rawValue: state.settings.agent)?.displayName ?? "Automatic — \(state.resolvedAgentLabel)"
     }
 
+    private var selectedModel: ModelOption? {
+        if customModel { return nil }
+        let m = state.settings.model
+        return effectiveKind.modelOptions.first { $0.value == (m.isEmpty ? effectiveKind.recommendedModel : m) }
+    }
+
     private var modelLabel: String {
         if customModel { return state.settings.model.isEmpty ? "Custom…" : state.settings.model }
-        let m = state.settings.model
-        return effectiveKind.modelOptions.first(where: { $0.value == m })?.label ?? m
+        return selectedModel?.label ?? state.settings.model
+    }
+
+    private var modelNote: String {
+        selectedModel?.note ?? "Any model name \(effectiveKind.displayName) accepts, exactly as its own picker spells it."
     }
 
     private var agentFooter: String {

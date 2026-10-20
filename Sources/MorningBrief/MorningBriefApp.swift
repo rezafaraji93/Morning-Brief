@@ -40,7 +40,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let path = response.notification.request.content.userInfo["path"] as? String
         await MainActor.run {
             if let path {
-                WindowManager.shared.showBrief(url: URL(fileURLWithPath: path))
+                let url = URL(fileURLWithPath: path)
+                let day = url.deletingPathExtension().lastPathComponent
+                if let b = BriefStore.recent().first(where: { $0.day == day }) {
+                    WindowManager.shared.showBrief(b)   // re-rendered with the current template
+                } else {
+                    WindowManager.shared.showBrief(url: url)
+                }
             } else {
                 WindowManager.shared.showSettings()
             }
