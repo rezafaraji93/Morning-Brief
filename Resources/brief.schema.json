@@ -1,0 +1,351 @@
+{
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "date_line",
+  "direction",
+  "day_class",
+  "headline",
+  "labels",
+  "events",
+  "motif",
+  "acts",
+  "needs_attention",
+  "resolved",
+  "sections",
+  "empty_message",
+  "connect_note",
+  "sources_used"
+ ],
+ "properties": {
+  "date_line": {
+   "type": "string"
+  },
+  "direction": {
+   "type": "string",
+   "enum": [
+    "ltr",
+    "rtl"
+   ]
+  },
+  "day_class": {
+   "type": "string",
+   "enum": [
+    "heavy",
+    "normal",
+    "open"
+   ]
+  },
+  "headline": {
+   "type": "string"
+  },
+  "labels": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "needs_attention",
+    "resolved"
+   ],
+   "properties": {
+    "needs_attention": {
+     "type": "string"
+    },
+    "resolved": {
+     "type": "string"
+    }
+   }
+  },
+  "events": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "title",
+     "start",
+     "end",
+     "optional"
+    ],
+    "properties": {
+     "title": {
+      "type": "string"
+     },
+     "start": {
+      "type": "string"
+     },
+     "end": {
+      "type": "string"
+     },
+     "optional": {
+      "type": "boolean"
+     }
+    }
+   }
+  },
+  "motif": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "kind",
+    "act"
+   ],
+   "properties": {
+    "kind": {
+     "type": "string",
+     "enum": [
+      "sun",
+      "dawn",
+      "moon",
+      "birds",
+      "flag",
+      "fireworks",
+      "ridge",
+      "none"
+     ]
+    },
+    "act": {
+     "type": "integer"
+    }
+   }
+  },
+  "acts": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "label",
+     "start",
+     "end",
+     "text"
+    ],
+    "properties": {
+     "label": {
+      "type": "string"
+     },
+     "start": {
+      "type": "string"
+     },
+     "end": {
+      "type": "string"
+     },
+     "text": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "needs_attention": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "title",
+     "text",
+     "source_phrase",
+     "url",
+     "button"
+    ],
+    "properties": {
+     "title": {
+      "type": "string"
+     },
+     "text": {
+      "type": "string"
+     },
+     "source_phrase": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "url": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "button": {
+      "anyOf": [
+       {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "label",
+         "seed"
+        ],
+        "properties": {
+         "label": {
+          "type": "string"
+         },
+         "seed": {
+          "type": "string"
+         }
+        }
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    }
+   }
+  },
+  "resolved": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "title",
+     "text",
+     "source_phrase",
+     "url",
+     "button"
+    ],
+    "properties": {
+     "title": {
+      "type": "string"
+     },
+     "text": {
+      "type": "string"
+     },
+     "source_phrase": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "url": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "button": {
+      "anyOf": [
+       {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "label",
+         "seed"
+        ],
+        "properties": {
+         "label": {
+          "type": "string"
+         },
+         "seed": {
+          "type": "string"
+         }
+        }
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    }
+   }
+  },
+  "sections": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "heading",
+     "prose",
+     "items"
+    ],
+    "properties": {
+     "heading": {
+      "type": "string"
+     },
+     "prose": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "title",
+        "text",
+        "source_phrase",
+        "url",
+        "button"
+       ],
+       "properties": {
+        "title": {
+         "type": "string"
+        },
+        "text": {
+         "type": "string"
+        },
+        "source_phrase": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "url": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "button": {
+         "anyOf": [
+          {
+           "type": "object",
+           "additionalProperties": false,
+           "required": [
+            "label",
+            "seed"
+           ],
+           "properties": {
+            "label": {
+             "type": "string"
+            },
+            "seed": {
+             "type": "string"
+            }
+           }
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "empty_message": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "connect_note": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "sources_used": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  }
+ }
+}

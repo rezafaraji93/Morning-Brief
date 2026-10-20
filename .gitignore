@@ -1,0 +1,5 @@
+.build/
+dist/
+dev/out/
+.swiftpm/
+*.xcodeproj

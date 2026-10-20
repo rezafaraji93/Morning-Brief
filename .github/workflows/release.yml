@@ -1,0 +1,75 @@
+# Builds MorningBrief-<version>.dmg on GitHub's macOS machines, so nobody needs Xcode locally.
+#
+# Runs on every push to main (the DMG is attached to the run as an artifact) and on version tags
+# like v0.1.0 (the DMG is also published as a GitHub Release).
+#
+# Signing is optional. Without these repository secrets you get an unsigned DMG:
+#   MACOS_CERT_P12        base64 of a "Developer ID Application" certificate exported as .p12
+#   MACOS_CERT_PASSWORD   password of that .p12
+#   SIGN_IDENTITY         e.g. "Developer ID Application: Your Company (TEAMID)"
+#   APPLE_ID              Apple ID email of a member of the developer team
+#   APPLE_TEAM_ID         the 10-character team ID
+#   APPLE_APP_PASSWORD    an app-specific password for that Apple ID (appleid.apple.com)
+name: Build DMG
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}"; else V="0.0.$GITHUB_RUN_NUMBER"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      - name: Import signing certificate
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ]; then echo "No signing secrets: building an unsigned DMG."; exit 0; fi
+          KC="$RUNNER_TEMP/build.keychain-db"; KCPW="$(uuidgen)"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KCPW" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          echo "SIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
+          if [ -n "$APPLE_ID" ]; then
+            xcrun notarytool store-credentials morningbrief --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$KC"
+            echo "NOTARY_PROFILE=morningbrief" >> "$GITHUB_ENV"
+            echo "NOTARY_KEYCHAIN=$KC" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build universal DMG
+        env:
+          ARCHS: "arm64 x86_64"
+        run: ./scripts/make-dmg.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MorningBrief-${{ env.VERSION }}
+          path: dist/MorningBrief-*.dmg
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/MorningBrief-*.dmg --title "Morning Brief $VERSION" --generate-notes

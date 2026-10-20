@@ -1,0 +1,7 @@
+{"date_line":"Friday · October 23 2026","direction":"ltr","day_class":"open",
+"headline":"The whole day is yours, Reza. Use it on the RFC.",
+"labels":{"needs_attention":"Needs attention","resolved":"Resolved"},
+"events":[{"title":"Stand Up","start":"09:45","end":"10:00","optional":false}],
+"motif":{"kind":"birds","act":3},
+"acts":[{"label":"9 – 10 AM","start":"09:00","end":"10:00","text":"Just standup."},{"label":"10 AM – 3 PM","start":"10:00","end":"15:00","text":"Nothing booked."},{"label":"3 PM onward","start":"15:00","end":"23:59","text":"Quiet."}],
+"needs_attention":[],"resolved":[],"sections":[],"empty_message":"Nothing needs you this morning.","connect_note":"Connect Slack in your agent's settings to see mentions here.","sources_used":["calendar"]}
