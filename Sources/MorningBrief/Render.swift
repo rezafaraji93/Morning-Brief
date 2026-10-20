@@ -52,6 +52,17 @@ enum PromptBuilder {
         return out
     }
 
+    static let personalize = """
+    You are helping set up a morning-brief app for the person you assist. Do not call any tools, do not fetch \
+    anything, and do not read or write files. Answer only from the context and memory you already carry about \
+    this user (for example your user-level memory or instruction files). Return ONLY one JSON object, no prose: \
+    {"name": their first name or null, "about": one or two sentences of setup notes about them — role, team, and \
+    which connected tools matter for a daily work brief — or null if you know nothing, "sections": up to three \
+    short extra-section ideas for their brief as plain strings (empty array if none)}. Example section: \
+    "#releases channel: anything shipped or rolled back". If you know nothing about this user, return \
+    {"name":null,"about":null,"sections":[]}.
+    """
+
     static let probe = """
     Do not call any tools and do not fetch any data. From the tools available to you in this session, list which \
     ones would serve each role for a morning brief: calendar, chat (e.g. Slack), email, meeting notes (e.g. Granola), \

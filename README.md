@@ -67,11 +67,12 @@ Slack messages and meeting notes are untrusted text. The prompt treats them as d
 
 ## Settings reference
 
-- **Binary path:** use this if your agent isn't on your shell's PATH.
-- **Model:** passed as `--model` (Claude), `-m` (Codex or Gemini).
-- **Extra arguments:** appended to the command line. Shell-style quoting works, for example `--mcp-config ~/brief-mcp.json --strict-mcp-config`.
-- **Include action buttons:** adds clay buttons on items Claude could move forward. Each one opens a prefilled Claude chat.
-- **Give up after:** the timeout for a run (default 15 minutes).
+- **Agent:** Automatic picks the first installed agent (Claude Code, then Codex, then Gemini CLI) with nothing to configure; the picker shows which one it chose.
+- **Model:** a dropdown of common models for the active agent, plus Custom… for any exact model name. "Agent default" is the safe choice.
+- **Fill from your agent's memory:** asks the agent what it already knows about you (from its own memory and instruction files, calling no tools) and prefills your name, About you and Extra sections. It also runs once automatically on first launch when About you is empty.
+- **Connections:** registers a tool's MCP server with the active agent (`<agent> mcp add`, user scope). Pick a known tool (Linear, Notion, Asana, Atlassian, GitHub, Sentry) or paste any server URL, then sign in once in the agent itself — the status text tells you the exact step. Slack, Gmail and Google Calendar have no public MCP URL; with Claude Code, enable them as connectors at claude.ai and they're picked up automatically.
+- **Include action buttons:** adds clay buttons on items Claude could move forward; each opens a prefilled Claude chat.
+- **Advanced:** the agent binary path (only if detection fails), extra command-line arguments appended to every run (e.g. `--mcp-config ~/brief-mcp.json`), the run timeout, and detected binary paths.
 
 ## Files
 

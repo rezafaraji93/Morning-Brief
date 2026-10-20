@@ -13,7 +13,7 @@ struct AgentRunner {
     let binary: String
     let settings: AppSettings
 
-    enum Mode { case brief, probe }
+    enum Mode { case brief, probe, personalize }
 
     struct Invocation {
         let args: [String]
@@ -32,6 +32,8 @@ struct AgentRunner {
             a += ["--disallowedTools", "Bash", "Edit", "Write", "NotebookEdit"]
             if mode == .brief {
                 a += ["--json-schema", try Res.string("brief.schema", "json")]
+            } else if mode == .personalize {
+                a += ["--json-schema", try Res.string("personalize.schema", "json")]
             }
             if !model.isEmpty { a += ["--model", model] }
             return Invocation(args: a + extra, outputFile: nil)
@@ -45,6 +47,8 @@ struct AgentRunner {
                      "-C", Paths.work.path,
                      "-o", out.path]
             if mode == .brief, let schema = Res.url("brief.schema", "json") {
+                a += ["--output-schema", schema.path]
+            } else if mode == .personalize, let schema = Res.url("personalize.schema", "json") {
                 a += ["--output-schema", schema.path]
             }
             if !model.isEmpty { a += ["-m", model] }
@@ -110,6 +114,80 @@ struct AgentRunner {
         }
         return nil
     }
+}
+
+/// A model choice offered in the Settings dropdown. Value "" means the agent's default.
+struct ModelOption: Identifiable, Hashable {
+    let value: String
+    let label: String
+    var id: String { value }
+}
+
+extension AgentKind {
+    /// A short, curated list per agent. "Agent default" is always right; the rest are the
+    /// commonly used names as of early 2026. Anything else goes through "Custom…".
+    var modelOptions: [ModelOption] {
+        switch self {
+        case .claude:
+            return [
+                ModelOption(value: "", label: "Agent default (recommended)"),
+                ModelOption(value: "opus", label: "Opus — most capable"),
+                ModelOption(value: "sonnet", label: "Sonnet — balanced"),
+                ModelOption(value: "haiku", label: "Haiku — fastest"),
+            ]
+        case .codex:
+            return [
+                ModelOption(value: "", label: "Agent default (recommended)"),
+                ModelOption(value: "gpt-5.1-codex", label: "GPT-5.1 Codex"),
+                ModelOption(value: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini — faster"),
+            ]
+        case .gemini:
+            return [
+                ModelOption(value: "", label: "Agent default (recommended)"),
+                ModelOption(value: "gemini-2.5-pro", label: "Gemini 2.5 Pro"),
+                ModelOption(value: "gemini-2.5-flash", label: "Gemini 2.5 Flash — faster"),
+            ]
+        }
+    }
+
+    /// `… mcp add` arguments that register a remote (HTTP) MCP server at user scope,
+    /// so it's available no matter which directory the agent runs from.
+    func mcpAddArgs(name: String, url: String) -> [String] {
+        switch self {
+        case .claude: return ["mcp", "add", "--transport", "http", "--scope", "user", name, url]
+        case .codex:  return ["mcp", "add", name, "--url", url]
+        case .gemini: return ["mcp", "add", "-s", "user", "-t", "http", name, url]
+        }
+    }
+
+    /// What the person still has to do once the server is registered.
+    func mcpAuthHint(name: String) -> String {
+        switch self {
+        case .claude:
+            return "Added. To sign in: open Terminal, run `claude`, type /mcp, choose “\(name)” and authenticate. After that the brief can use it."
+        case .codex:
+            return "Added. Open Terminal and run `codex` once — it asks you to sign in to “\(name)” the first time it's used."
+        case .gemini:
+            return "Added. Open Terminal and run `gemini` once, then type /mcp auth \(name) to sign in."
+        }
+    }
+}
+
+/// Well-known remote MCP servers, used to prefill the Connections form.
+/// URLs are editable in the UI in case a vendor moves theirs.
+struct KnownTool: Identifiable, Hashable {
+    let name: String
+    let url: String
+    var id: String { name }
+
+    static let catalog: [KnownTool] = [
+        KnownTool(name: "linear", url: "https://mcp.linear.app/sse"),
+        KnownTool(name: "notion", url: "https://mcp.notion.com/mcp"),
+        KnownTool(name: "asana", url: "https://mcp.asana.com/sse"),
+        KnownTool(name: "atlassian", url: "https://mcp.atlassian.com/v1/sse"),
+        KnownTool(name: "github", url: "https://api.githubcopilot.com/mcp/"),
+        KnownTool(name: "sentry", url: "https://mcp.sentry.dev/mcp"),
+    ]
 }
 
 enum AgentDetector {

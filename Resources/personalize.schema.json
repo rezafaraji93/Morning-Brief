@@ -1,0 +1,10 @@
+{
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["name", "about", "sections"],
+ "properties": {
+  "name": {"type": ["string", "null"]},
+  "about": {"type": ["string", "null"]},
+  "sections": {"type": "array", "items": {"type": "string"}}
+ }
+}

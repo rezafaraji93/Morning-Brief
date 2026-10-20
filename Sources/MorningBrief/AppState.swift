@@ -27,12 +27,17 @@ final class AppState: ObservableObject {
     @Published private(set) var recent: [StoredBrief] = []
     @Published var probeResult: String = ""
     @Published private(set) var probing = false
+    @Published var personalizeStatus: String = ""
+    @Published private(set) var personalizing = false
+    @Published var connectStatus: String = ""
+    @Published private(set) var connecting = false
     @Published var launchAtLogin: Bool = (SMAppService.mainApp.status == .enabled) {
         didSet { applyLaunchAtLogin() }
     }
 
     private var timer: Timer?
     private let lastAttemptKey = "MorningBrief.lastAutoAttemptDay"
+    private let prefillAttemptedKey = "MorningBrief.prefillAttempted"
 
     private init() {
         settings = AppSettings.load()
@@ -64,6 +69,20 @@ final class AppState: ObservableObject {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
             Task { @MainActor in AppState.shared.checkSchedule() }
+        }
+
+        // First launch with an agent installed: quietly ask it what it already knows about
+        // the user, so About/Sections start out filled instead of empty. One attempt, ever.
+        if !UserDefaults.standard.bool(forKey: prefillAttemptedKey),
+           settings.about.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+                Task { @MainActor in
+                    let s = AppState.shared
+                    guard !UserDefaults.standard.bool(forKey: s.prefillAttemptedKey) else { return }
+                    UserDefaults.standard.set(true, forKey: s.prefillAttemptedKey)
+                    await s.personalize(overwrite: false)
+                }
+            }
         }
     }
 
@@ -112,6 +131,7 @@ final class AppState: ObservableObject {
     }
 
     /// The agent to use: the one chosen in Settings, or the first installed (Claude, Codex, Gemini).
+    /// With several agents installed, this picks one on its own — the user never has to.
     func resolvedAgent() -> (AgentKind, String)? {
         if let k = AgentKind(rawValue: settings.agent) {
             if let p = agents[k] { return (k, p) }
@@ -119,6 +139,22 @@ final class AppState: ObservableObject {
         }
         for k in AgentKind.allCases { if let p = agents[k] { return (k, p) } }
         return nil
+    }
+
+    /// For the Settings UI: which agent "Automatic" currently means.
+    var resolvedAgentLabel: String {
+        if let (k, _) = resolvedAgent() { return k.displayName }
+        return agents.isEmpty ? "no agent found" : "none"
+    }
+
+    /// Waits for first-launch agent detection if it hasn't finished yet.
+    private func ensureAgentsDetected() async {
+        guard agents.isEmpty else { return }
+        let override = settings.binaryOverride, preferred = settings.agent
+        let found = await Task.detached { AgentDetector.detect(override: override, preferred: preferred) }.value
+        var map: [AgentKind: String] = [:]
+        for (k, p) in found { map[k] = p }
+        agents = map
     }
 
     // MARK: schedule
@@ -170,16 +206,9 @@ final class AppState: ObservableObject {
 
     func generate(manual: Bool) async {
         guard !isRunning else { return }
-        if agents.isEmpty {
-            // First launch: detection may still be running.
-            let override = settings.binaryOverride, preferred = settings.agent
-            let found = await Task.detached { AgentDetector.detect(override: override, preferred: preferred) }.value
-            var map: [AgentKind: String] = [:]
-            for (k, p) in found { map[k] = p }
-            agents = map
-            // Another generate() may have started while we were awaiting detection.
-            guard !isRunning else { return }
-        }
+        await ensureAgentsDetected()
+        // Another generate() may have started while we were awaiting detection.
+        guard !isRunning else { return }
         guard let resolved = resolvedAgent() else {
             fail(BriefError.noAgent.localizedDescription, notify: !manual)
             return
@@ -221,6 +250,100 @@ final class AppState: ObservableObject {
             probeResult = "\(kind.displayName):\n" + text.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             probeResult = error.localizedDescription
+        }
+    }
+
+    private struct Personalization: Decodable {
+        var name: String?
+        var about: String?
+        var sections: [String]?
+    }
+
+    /// Asks the active agent what it already knows about the user (from its own memory and
+    /// instruction files; it is told to call no tools) and fills the Brief settings with it.
+    /// With overwrite=false only empty fields are touched.
+    func personalize(overwrite: Bool) async {
+        guard !personalizing else { return }
+        await ensureAgentsDetected()
+        guard let resolved = resolvedAgent() else {
+            personalizeStatus = BriefError.noAgent.localizedDescription
+            return
+        }
+        let (kind, binary) = resolved
+        personalizing = true
+        personalizeStatus = "Asking \(kind.displayName) what it knows about you…"
+        defer { personalizing = false }
+        do {
+            let runner = AgentRunner(kind: kind, binary: binary, settings: settings)
+            let text = try await runAgent(runner, prompt: PromptBuilder.personalize, mode: .personalize,
+                                          logName: "personalize-\(kind.rawValue)", timeout: 180)
+            var parsed: Personalization?
+            for candidate in JSONExtract.objects(in: text) {
+                if let d = candidate.data(using: .utf8),
+                   let p = try? JSONDecoder().decode(Personalization.self, from: d) {
+                    parsed = p
+                    break
+                }
+            }
+            guard let p = parsed else {
+                personalizeStatus = "\(kind.displayName) didn't return anything usable."
+                return
+            }
+            var filled: [String] = []
+            if let n = p.name?.trimmingCharacters(in: .whitespacesAndNewlines), !n.isEmpty,
+               settings.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                settings.name = n
+                filled.append("name")
+            }
+            if let a = p.about?.trimmingCharacters(in: .whitespacesAndNewlines), !a.isEmpty,
+               overwrite || settings.about.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                settings.about = a
+                filled.append("about you")
+            }
+            let secs = (p.sections ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            if !secs.isEmpty,
+               overwrite || settings.sections.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                settings.sections = secs.joined(separator: "\n")
+                filled.append("extra sections")
+            }
+            personalizeStatus = filled.isEmpty
+                ? "\(kind.displayName) had nothing new to add. You can edit the fields by hand."
+                : "Filled from \(kind.displayName)'s memory: \(filled.joined(separator: ", ")). Edit anything that's off."
+        } catch {
+            personalizeStatus = error.localizedDescription
+        }
+    }
+
+    /// Registers a remote MCP server with the active agent (`<agent> mcp add …`, user scope).
+    func connectTool(name: String, url: String) async {
+        guard !connecting else { return }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, url.lowercased().hasPrefix("https://") else {
+            connectStatus = "A connection needs a short name and an https:// URL."
+            return
+        }
+        await ensureAgentsDetected()
+        guard let resolved = resolvedAgent() else {
+            connectStatus = BriefError.noAgent.localizedDescription
+            return
+        }
+        let (kind, binary) = resolved
+        connecting = true
+        connectStatus = "Adding “\(name)” to \(kind.displayName)…"
+        defer { connecting = false }
+        do {
+            let result = try await ProcessRunner.run(executable: binary,
+                                                     args: kind.mcpAddArgs(name: name, url: url),
+                                                     cwd: Paths.work, timeout: 60, logName: "mcp-add-\(name)")
+            if result.status == 0 {
+                connectStatus = kind.mcpAuthHint(name: name)
+            } else {
+                let tail = (result.stderr + result.stdout).split(separator: "\n").suffix(3).joined(separator: " ")
+                connectStatus = "Couldn't add it (exit \(result.status)). \(tail)"
+            }
+        } catch {
+            connectStatus = error.localizedDescription
         }
     }
 
