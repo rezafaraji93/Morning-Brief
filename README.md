@@ -1,108 +1,73 @@
 # Morning Brief
 
-A macOS menu bar app that writes you a calm one-page brief every weekday morning: your day drawn as terrain, then what needs you and what's already sorted. It pulls from your calendar, Slack, Granola, Linear and the rest of your tools.
-
-It doesn't hold any API keys or connect to Slack or Google itself. It drives the AI agent you already have installed (**Claude Code**, **Codex** or **Gemini CLI**), using the connectors you've already set up in that agent.
+A macOS menu bar app that writes you a calm one-page brief every weekday morning: your day drawn as terrain, then what needs you, what got resolved, and a few things worth a look. It reads your calendar, Slack, Granola, Linear and the rest through the AI agent you already have installed (**Claude Code**, **Codex** or **Gemini CLI**) and the connectors you've set up in it. The app holds no API keys of its own.
 
 ```
  8:00 ──► Morning Brief ──► your agent CLI (headless, read-only)
-                               │  reads calendar · Slack · Granola · Linear … via its MCP connectors
+                               │  reads calendar · Slack · Granola · Linear … via its connectors
                                ▼
-                           JSON brief (fixed schema)
-                               │
-          template.html ◄──────┘  the app draws the page itself: terrain, lists, links
+                           JSON brief (fixed schema) ──► drawn by the app's own template
                                ▼
         ~/Library/Application Support/MorningBrief/briefs/2026-10-20.html  + notification
 ```
 
-The agent only gathers, sorts and writes the words. The page is drawn by the app's own template, so every brief looks the same whichever agent wrote it. Agent text is inserted as plain text, never as HTML.
+The agent only gathers, sorts and writes the words; the app draws the page, so every brief looks the same whichever agent wrote it. Agent text is inserted as plain text, never as HTML.
 
 ## Install
 
-1. Download `MorningBrief-x.y.z.dmg`, from the GitHub Release or wherever it was shared.
-2. Double-click it and drag **Morning Brief** onto **Applications**.
-3. Open it from Applications. A sun appears in your menu bar.
-
-If macOS says it "can't verify" the app, the DMG wasn't notarized. Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. You only need to do this once.
-
-### Making the DMG
-
-- **Easiest: let GitHub build it.** Push this repo to GitHub. `.github/workflows/release.yml` builds a universal DMG on GitHub's Macs for every push to `main` and publishes it as a GitHub Release (`v0.1.<run number>`), with a link you can share. Push your own tag like `v1.0.0` to release under that version instead. Add the signing secrets listed at the top of the workflow and the DMG is signed and notarized, so it opens with no warnings.
-- **On your Mac** (needs Xcode Command Line Tools): run `./scripts/make-dmg.sh`. Add `SIGN_IDENTITY` and `NOTARY_PROFILE` to get a notarized DMG (see "Sharing it with the team").
-- **Just for yourself:** run `./scripts/build-app.sh` and move `dist/Morning Brief.app` to Applications.
+1. Download the DMG from the latest [GitHub Release](../../releases) and drag **Morning Brief** onto **Applications**.
+2. Open it. A sun appears in your menu bar. If macOS says it "can't verify" the app, go to **System Settings → Privacy & Security** and click **Open Anyway** once.
 
 ## First run
 
-1. Click the menu bar sun. A panel drops down with today's brief; click the gear for **Settings**.
-2. Under **Agent**, it shows which of `claude`, `codex` and `gemini` it found. Keep **Automatic** (it prefers Claude, then Codex, then Gemini) or pick one.
-3. Click **Check What's Connected**. It lists which tools serve calendar, chat, email, meeting notes and tasks, and which ones still need a sign-in. If something says "not connected", see below.
-4. Fill in **About you**, for example *"Android engineer on the Users team; include Linear issues assigned to me."* Optionally add **Extra sections**, one per line, such as `#android-releases: anything shipped or rolled back`.
-5. Click **Generate now** in the panel. The first run takes 2 to 5 minutes. After that it runs on its own at the time you set (default 8:00 on weekdays). If your Mac was asleep, it runs when the Mac wakes.
+1. Click the sun, then the gear. **Agent** shows which of Claude Code, Codex and Gemini CLI it found; Automatic prefers them in that order.
+2. **Check what's connected** lists which tools serve calendar, chat, email, meeting notes and tasks, and which still need a sign-in. Add missing ones under **Add a tool**; you sign in once in the browser.
+3. **Fill from your agent's memory** prefills your name and "About you"; edit as needed.
+4. **Suggest from Slack** fills in the channels to watch; add any it missed.
+5. Click **Generate now**. The first brief takes about four minutes. After that it runs by itself at the time you set (8:00 on weekdays by default), or as soon as your Mac wakes, and retries twice if a run fails. Turn on **Launch at login**.
 
-Turn on **Launch at login** so it's always there.
+## What's in the brief
 
-## Connecting your tools
+- **Needs attention:** things it would cost you to ignore today: someone blocked on you, a window closing, a meeting commitment coming due.
+- **Resolved:** threads and questions that closed, with who closed them and the outcome.
+- **From your meetings:** commitments you made in the last three weeks of meeting notes, with a countdown, unless a ticket already tracks them.
+- **Worth a look:** gentle nudges about your own work in the watched channels: results, feedback, something shipped.
+- **Your extra sections**, one per line in Settings, such as `#android-releases: anything shipped or rolled back`.
 
-The brief can only see what your agent can see.
+Watched Slack channels are read in full for the last working day (Friday to Sunday on a Monday), but only what concerns you makes the brief. Channels under *summarize* always get a short summary. Every item links back to its message, event, issue or doc.
 
-- **Claude Code.** If you're signed in with your claude.ai account, the connectors you enabled on claude.ai (Slack, Google Calendar, Granola, Linear…) are normally available to `claude` too. Run `claude` once, type `/mcp` and check they're listed and authenticated. You can also add servers directly with `claude mcp add --transport http <name> <url>` (user scope).
-- **Codex.** Add each server once with `codex mcp add <name> --url <url>`. The servers live in `~/.codex/config.toml`.
-- **Gemini CLI.** Add servers in **user** scope: `gemini mcp add -s user -t http <name> <url>`. The app runs Gemini from its own folder, so project-scope servers won't be found.
+## Settings worth knowing
 
-Get each vendor's MCP URL from their docs (Slack, Granola, Linear and Notion all publish one).
+- **Model:** the recommended one is selected, with a note on the trade-off. Measured on Claude Code with the same brief: Opus gives the full brief (about 4 min, $2); Sonnet is fastest and accurate but delivers less (1½ min, 50¢); Haiku reads everything for 10¢ but gets details wrong; Fable is the same brief as Opus at twice the time and three times the cost.
+- **While it writes**, the panel says what the agent is reading ("Skimming your Slack…"), from its live output. Each brief's tokens, cost and time show in the footer afterwards.
+- **Add a tool:** Granola, Linear, Notion, Atlassian, Asana and Sentry sign in through the browser. Google Calendar and Slack only let approved apps sign in, so with Claude Code turn them on at claude.ai under Settings → Connectors. GitHub needs a personal access token; the app shows the command.
+- **Advanced:** the agent's program path (only if detection fails), extra command-line arguments, and the timeout.
 
 ## Safety
 
-Each run is told it's read-only, and each agent runs in its most restrictive mode that can still read connectors:
+Every run is told it's read-only and treats everything it reads as data, never as instructions. Each agent runs in its most restrictive mode that can still read connectors:
 
-| Agent | Flags the app uses |
+| Agent | How it runs |
 |---|---|
-| Claude Code | `-p --permission-mode auto --disallowedTools Bash Edit Write NotebookEdit --json-schema …` (falls back to `bypassPermissions` with the same tools disallowed if your build doesn't offer `auto`) |
-| Codex | `exec --sandbox read-only --ephemeral --output-schema …` |
-| Gemini CLI | `-p --approval-mode plan` (read-only) |
+| Claude Code | `--permission-mode auto`; shell, editing, subagents, file search and web tools disallowed |
+| Codex | `exec --sandbox read-only --ephemeral` |
+| Gemini CLI | `--approval-mode plan` |
 
-Slack messages and meeting notes are untrusted text. The prompt treats them as data and never as instructions. For extra safety you can expose only read tools to the agent, for example Gemini's `--exclude-tools` on `gemini mcp add`.
-
-**If Gemini's plan mode blocks your connectors' read tools**, put `--approval-mode yolo` under **Extra arguments** (it replaces the default). That auto-approves every tool, so pair it with `--exclude-tools` on your servers' write tools. The same goes for Claude Code: a `--permission-mode` you set there replaces `auto`.
-
-## Settings reference
-
-- **Agent:** Automatic picks the first installed agent (Claude Code, then Codex, then Gemini CLI) with nothing to configure; the picker shows which one it chose.
-- **Model:** the recommended model is selected for you, with a note on what each choice trades off. With Claude Code: Opus is recommended (the full brief, about 4 minutes and $2 a day); Sonnet is fastest and accurate on what needs you but delivers less (about 1½ minutes and 50¢); Fable gives the same brief as Opus at twice the time and three times the cost; Haiku reads everything for about 10¢ but gets details wrong. Codex and Gemini have recommendations from the vendors' descriptions, not yet measured. Custom… takes any exact model name, and "own default" uses whatever the CLI is set to.
-- **Fill from your agent's memory:** asks the agent what it already knows about you (from its own memory and instruction files, calling no tools) and prefills your name, About you and Extra sections. It also runs once automatically on first launch when About you is empty.
-- **While it writes:** the panel says what the agent is reading right now ("Skimming your Slack…", "Rereading your meeting notes…"), with the elapsed time and the number of lookups so far. The line comes from the agent's own live output, not a guess.
-- **What it cost:** the panel footer shows each brief's tokens, cost and time ("1.7M tokens · $2.08 · 3m 25s"); hover for the breakdown. Claude Code reports all of it; Codex reports tokens only; Gemini reports tokens when its output includes stats.
-- **Slack channels:** *Channels to watch* are read in full for the last working day (Friday through Sunday on a Monday), but only what concerns you makes the brief: your name, your work, decisions that change it, and asks to everyone with a deadline. Optional nudges land in **Worth a look**; anything asking something of you goes to Needs attention. *Channels to summarize* always get a short summary of their own. **Suggest from Slack** has the agent look at the channels you're active in (read-only) and adds them to Channels to watch.
-- **From your meetings:** the brief looks back three weeks in your meeting notes for commitments you own with a deadline, and counts down the days left. It skips anything that already has a ticket (standups cover those) or is done.
-- **Connections:** registers a tool's MCP server with the active agent (`<agent> mcp add`, user scope). The list starts with Google Calendar, Slack, Granola, Linear, Notion and GitHub, hides tools the agent already has, and has **Other server…** for any MCP URL. Granola, Linear, Notion, Atlassian, Asana and Sentry sign in through the browser. Google Calendar and Slack only let approved apps sign in, so with Claude Code you turn them on at claude.ai (Settings → Connectors) instead; GitHub needs a personal access token, and the app shows the exact command.
-- **Include action buttons:** adds red buttons on items Claude could move forward; each opens a prefilled Claude chat.
-- **Advanced:** the agent binary path (only if detection fails), extra command-line arguments appended to every run (e.g. `--mcp-config ~/brief-mcp.json`), the run timeout, and detected binary paths.
+If Gemini's plan mode blocks your connectors' read tools, put `--approval-mode yolo` under Extra arguments and pair it with `--exclude-tools` on the servers' write tools.
 
 ## Files
 
-- `~/Library/Application Support/MorningBrief/briefs/`: one `.html` and one `.json` per day. Each HTML file is self-contained, so you can open it in a browser or send it.
-- `~/Library/Application Support/MorningBrief/logs/`: the agent's stdout and stderr for each run (**Show Logs in Finder**). Look here first if a run fails.
+`~/Library/Application Support/MorningBrief/` holds `briefs/` (one self-contained `.html` plus `.json` per day; open or send them as they are) and `logs/` (each run's output; **Show Logs in Finder** in the panel menu). Look in the logs first if a run fails.
 
-## Sharing it with the team
+## Building and releasing
 
-Engineers can build it themselves (above). To hand out a ready-made app that opens without Gatekeeper warnings, sign and notarize it with a Developer ID:
-
-```bash
-xcrun notarytool store-credentials morningbrief --apple-id you@company.com --team-id TEAMID
-SIGN_IDENTITY="Developer ID Application: Your Company (TEAMID)" NOTARY_PROFILE=morningbrief \
-ARCHS="arm64 x86_64" ./scripts/build-app.sh
-```
-
-Use `./scripts/make-dmg.sh` with those variables instead to get a notarized `dist/MorningBrief-0.1.0.dmg`. Or share `dist/MorningBrief-0.1.0.zip`. An unsigned zip downloaded from Slack is quarantined. People can still open it through **System Settings → Privacy & Security → Open Anyway**, or by running `xattr -dr com.apple.quarantine "/Applications/Morning Brief.app"`.
+- **GitHub does it:** every push to `main` builds a universal DMG and publishes it as release `v0.1.<run number>`. Push a tag like `v1.0.0` to release under that version. Add the signing secrets listed at the top of `.github/workflows/release.yml` to get a notarized DMG that opens with no warnings.
+- **Locally** (needs Xcode): `./scripts/build-app.sh` builds `dist/Morning Brief.app`; `./scripts/make-dmg.sh` wraps it in a DMG. Set `SIGN_IDENTITY` and `NOTARY_PROFILE` to sign and notarize.
 
 ## Developing
 
-- `swift run` starts the app straight from the repo. Resources load from `./Resources`, and notifications are off because there's no app bundle.
-- The page design lives entirely in `Resources/template.html`, and the agent's instructions in `Resources/prompt.md`. The JSON contract is `Resources/brief.schema.json`, regenerated by `python3 dev/make_schema.py`.
-- To preview the template without an agent:
-  ```bash
-  node dev/render.js Resources/template.html dev/samples/normal.json /tmp/brief.html 0 && open /tmp/brief.html
-  ```
-  There are samples for normal, heavy (with an overlap), open, RTL and empty days.
+- `swift run` starts the app from the repo; resources load from `./Resources`.
+- The page design is `Resources/template.html`, the agent's instructions `Resources/prompt.md`, and the JSON contract `Resources/brief.schema.json` (regenerated by `python3 dev/make_schema.py`).
+- Preview the template without an agent: `node dev/render.js Resources/template.html dev/samples/normal.json /tmp/brief.html 0 && open /tmp/brief.html`.
 
-The design follows the original "morning" brief skill (a hand-sketched terrain with one accent) dressed in the Polarsteps brand: Ocean Blue, Desert White, Polarsteps Red and Aurora Green, set in Polarsteps Fellix with LORE Alternates for eyebrows. Both fonts load from the Mac when installed and fall back to the system font otherwise.
+The design follows the original "morning" brief skill, dressed in the Polarsteps brand colours and fonts (Polarsteps Fellix and LORE Alternates, loaded from the Mac when installed).
