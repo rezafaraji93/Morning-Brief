@@ -1,6 +1,6 @@
 # Morning Brief
 
-A macOS menu bar app that writes you a calm one-page brief every weekday morning: your day drawn as terrain, then what needs you, what got resolved, and a few things worth a look. It reads your calendar, Slack, Granola, Linear and the rest through the AI agent you already have installed (**Claude Code**, **Codex** or **Gemini CLI**) and the connectors you've set up in it. The app holds no API keys of its own.
+A macOS menu bar app that writes you a calm one-page brief every weekday morning: your day drawn as terrain, then what needs you, what got resolved, and a few things worth a look. It reads your calendar, Slack, Granola, Linear and the rest through the AI agent you already have installed (**Claude Code** or **Codex**) and the connectors you've set up in it. The app holds no API keys of its own.
 
 ```
  8:00 ──► Morning Brief ──► your agent CLI (headless, read-only)
@@ -20,9 +20,9 @@ The agent only gathers, sorts and writes the words; the app draws the page, so e
 
 ## First run
 
-1. Click the sun, then the gear. **Agent** shows which of Claude Code, Codex and Gemini CLI it found; Automatic prefers them in that order.
+1. Click the sun, then the gear. **Agent** shows whether it found Claude Code and Codex; Automatic prefers Claude Code.
 2. **Check what's connected** lists which tools serve calendar, chat, email, meeting notes and tasks, and which still need a sign-in. Add missing ones under **Add a tool**; you sign in once in the browser.
-3. **Fill from your agent's memory** prefills your name and "About you"; edit as needed.
+3. **Fill from your agent's memory** prefills your name and "About you"; edit as needed, and add **Extra sections** for anything specific, one per line.
 4. **Suggest from Slack** fills in the channels to watch; add any it missed.
 5. Click **Generate now**. The first brief takes about four minutes. After that it runs by itself at the time you set (8:00 on weekdays by default), or as soon as your Mac wakes, and retries twice if a run fails. Turn on **Launch at login**.
 
@@ -32,15 +32,17 @@ The agent only gathers, sorts and writes the words; the app draws the page, so e
 - **Resolved:** threads and questions that closed, with who closed them and the outcome.
 - **From your meetings:** commitments you made in the last three weeks of meeting notes, with a countdown, unless a ticket already tracks them.
 - **Worth a look:** gentle nudges about your own work in the watched channels: results, feedback, something shipped.
+- **Flagged in Slack:** messages you reacted to with your to-do emoji (🔖 by default); remove the reaction when done. Slack reminders addressed to you or your team are picked up too. (Slack's To-dos list isn't readable by the agent; a to-do with a reminder set is, once Slackbot sends it.)
 - **Your extra sections**, one per line in Settings, such as `#android-releases: anything shipped or rolled back`.
 
-Watched Slack channels are read in full for the last working day (Friday to Sunday on a Monday), but only what concerns you makes the brief. Channels under *summarize* always get a short summary. Every item links back to its message, event, issue or doc.
+Watched Slack channels are read in full for the last working day (Friday to Sunday on a Monday), but only what concerns you makes the brief. Every item links back to its message, event, issue or doc, and has a tick: mark it done and it's struck through here and left out of the next briefs.
 
 ## Settings worth knowing
 
 - **Model:** the recommended one is selected, with a note on the trade-off. Measured on Claude Code with the same brief: Opus gives the full brief (about 4 min, $2); Sonnet is fastest and accurate but delivers less (1½ min, 50¢); Haiku reads everything for 10¢ but gets details wrong; Fable is the same brief as Opus at twice the time and three times the cost.
 - **While it writes**, the panel says what the agent is reading ("Skimming your Slack…"), from its live output. Each brief's tokens, cost and time show in the footer afterwards.
 - **Add a tool:** Granola, Linear, Notion, Atlassian, Asana and Sentry sign in through the browser. Google Calendar and Slack only let approved apps sign in, so with Claude Code turn them on at claude.ai under Settings → Connectors. GitHub needs a personal access token; the app shows the command.
+- **Prompt:** turn on "Use my own prompt" to edit a copy of the built-in instructions; placeholders like `{{NAME}}` and `{{SINCE}}` are filled in at run time, and "Reset to default" brings the built-in text back. "Copy today's full prompt" puts the exact text the agent will get on the clipboard.
 - **Advanced:** the agent's program path (only if detection fails), extra command-line arguments, and the timeout.
 
 ## Safety
@@ -51,9 +53,6 @@ Every run is told it's read-only and treats everything it reads as data, never a
 |---|---|
 | Claude Code | `--permission-mode auto`; shell, editing, subagents, file search and web tools disallowed |
 | Codex | `exec --sandbox read-only --ephemeral` |
-| Gemini CLI | `--approval-mode plan` |
-
-If Gemini's plan mode blocks your connectors' read tools, put `--approval-mode yolo` under Extra arguments and pair it with `--exclude-tools` on the servers' write tools.
 
 ## Files
 
@@ -66,7 +65,7 @@ If Gemini's plan mode blocks your connectors' read tools, put `--approval-mode y
 
 ## Developing
 
-- `swift run` starts the app from the repo; resources load from `./Resources`.
+- `swift run` starts the app from the repo; resources load from `./Resources`. `MORNINGBRIEF_PANEL_WINDOW=1 swift run` also opens the panel as an ordinary window, for screenshots and UI work.
 - The page design is `Resources/template.html`, the agent's instructions `Resources/prompt.md`, and the JSON contract `Resources/brief.schema.json` (regenerated by `python3 dev/make_schema.py`).
 - Preview the template without an agent: `node dev/render.js Resources/template.html dev/samples/normal.json /tmp/brief.html 0 && open /tmp/brief.html`.
 

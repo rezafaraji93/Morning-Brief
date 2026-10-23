@@ -193,10 +193,13 @@ struct BriefPanel: View {
     @ViewBuilder private var today: some View {
         if let b = state.todayBrief {
             ZStack(alignment: .top) {
-                BriefWebView(brief: b, buttons: state.settings.includeButtons)
+                BriefWebView(brief: b)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 if state.isRunning {
                     RunningBanner()
+                        .padding(10)
+                } else if case .failed(let message) = state.status {
+                    FailedBanner(message: message)
                         .padding(10)
                 }
             }
@@ -236,6 +239,26 @@ struct BriefPanel: View {
                 }
                 .frame(maxWidth: 320)
             }
+        } else if state.agentsChecked, state.agents.isEmpty {
+            PanelCard {
+                VStack(spacing: 12) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 30, weight: .light))
+                        .foregroundStyle(Brand.red)
+                    Text("No agent found yet")
+                        .font(Brand.font(18, .bold))
+                        .foregroundStyle(Brand.ink)
+                    Text("Morning Brief writes through Claude Code or Codex. Install one and it's picked up on its own; if it's installed already, point to it under Advanced in Settings.")
+                        .font(Brand.font(13.5))
+                        .foregroundStyle(Brand.inkSoft)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Open Settings") { showingSettings = true }
+                        .buttonStyle(PillButtonStyle())
+                        .padding(.top, 6)
+                }
+                .frame(maxWidth: 300)
+            }
         } else {
             PanelCard {
                 VStack(spacing: 12) {
@@ -248,10 +271,25 @@ struct BriefPanel: View {
                     Text("The next one is due \(state.nextRunDescription()).")
                         .font(Brand.font(13.5))
                         .foregroundStyle(Brand.inkSoft)
-                    Button("Generate now") { Task { await state.generate(manual: true) } }
-                        .buttonStyle(PillButtonStyle())
-                        .padding(.top, 6)
+                    HStack(spacing: 10) {
+                        Button("Generate now") { Task { await state.generate(manual: true) } }
+                            .buttonStyle(PillButtonStyle())
+                        if state.recent.isEmpty {
+                            Button("Settings") { showingSettings = true }
+                                .buttonStyle(SecondaryButtonStyle(height: 36))
+                        }
+                    }
+                    .padding(.top, 6)
+                    if state.recent.isEmpty {
+                        Text("First time? Settings is where you check what's connected and say a little about yourself, so the first brief fits.")
+                            .font(Brand.font(12))
+                            .foregroundStyle(Brand.inkGrey)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 2)
+                    }
                 }
+                .frame(maxWidth: 300)
             }
         }
     }
@@ -276,7 +314,7 @@ struct BriefPanel: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                BriefWebView(brief: b, buttons: state.settings.includeButtons)
+                BriefWebView(brief: b)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
         } else if past.isEmpty {
@@ -302,7 +340,7 @@ struct BriefPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Brand.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
-            .scrollIndicators(.never)
+            .scrollIndicators(.automatic)
         }
     }
 
@@ -310,10 +348,10 @@ struct BriefPanel: View {
 
     private var footer: some View {
         HStack {
-            if state.todayBrief != nil, !state.isRunning, !isFailed {
-                Text("Next brief \(state.nextRunDescription())")
-            } else {
+            if state.isRunning {
                 StatusText()
+            } else {
+                Text("Next brief \(state.nextRunDescription())")
             }
             Spacer()
             if !showingSettings, let usage = shownBrief?.usage {
@@ -327,8 +365,6 @@ struct BriefPanel: View {
         .padding(.horizontal, 12)
         .padding(.bottom, 2)
     }
-
-    private var isFailed: Bool { if case .failed = state.status { return true }; return false }
 
     /// "GOOD MORNING, REZA" — the brief itself carries the date, so the header doesn't repeat it.
     private var greeting: String {
@@ -347,8 +383,6 @@ private struct StatusText: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 20)) { _ in
             Text(state.statusLine)
-                .font(Brand.font(13))
-                .foregroundStyle(Brand.inkSoft)
         }
     }
 }
@@ -397,6 +431,50 @@ private struct RunningBanner: View {
         .padding(.horizontal, 14)
         .frame(height: 38)
         .background(Brand.raised, in: Capsule())
+        .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+    }
+}
+
+/// Over today's brief when a regenerate didn't finish: the brief is still good, that run isn't.
+private struct FailedBanner: View {
+    @EnvironmentObject var state: AppState
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Brand.red)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("The last run didn't finish")
+                    .font(Brand.font(13, .medium))
+                    .foregroundStyle(Brand.ink)
+                Text(message)
+                    .font(Brand.font(11.5))
+                    .foregroundStyle(Brand.inkSoft)
+                    .lineLimit(2)
+                    .help(message)
+            }
+            Spacer(minLength: 6)
+            Button("Try again") { Task { await state.generate(manual: true) } }
+                .buttonStyle(PillButtonStyle(compact: true))
+            Button {
+                state.dismissFailure()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Brand.inkSoft)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
+        .background(Brand.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
     }
 }
@@ -451,6 +529,7 @@ private struct PanelIconButton: View {
         }
         .buttonStyle(.plain)
         .help(help)
+        .accessibilityLabel(help)
         .onHover { hovering = $0 }
     }
 }
@@ -504,28 +583,50 @@ private struct EarlierRow: View {
 }
 
 struct PillButtonStyle: ButtonStyle {
+    /// A shorter pill, for banners and rows.
+    var compact = false
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(Brand.font(14, .semibold))
+            .font(Brand.font(compact ? 12.5 : 14, .semibold))
             .foregroundStyle(.white)
-            .padding(.horizontal, 20)
-            .frame(height: 36)
+            .padding(.horizontal, compact ? 14 : 20)
+            .frame(height: compact ? 28 : 36)
             .background(configuration.isPressed ? Brand.redPressed : Brand.red, in: Capsule())
             .contentShape(Capsule())
+    }
+}
+
+/// Receives the page's "done" ticks (window.webkit.messageHandlers.brief) and builds the web
+/// view configuration that wires them up.
+final class BriefPageBridge: NSObject, WKScriptMessageHandler {
+    @MainActor static let shared = BriefPageBridge()
+
+    @MainActor
+    static func configuration() -> WKWebViewConfiguration {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.userContentController.add(shared, name: "brief")
+        return config
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "brief", let body = message.body as? [String: Any],
+              body["action"] as? String == "done", let key = body["key"] as? String, !key.isEmpty else { return }
+        let title = body["title"] as? String ?? ""
+        let done = body["done"] as? Bool ?? true
+        DoneStore.set(key: key, title: title, done: done)
     }
 }
 
 /// A stored brief, re-rendered with the current template and shown in a web view.
 struct BriefWebView: NSViewRepresentable {
     let brief: StoredBrief
-    let buttons: Bool
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
-        let web = WKWebView(frame: .zero, configuration: config)
+        let web = WKWebView(frame: .zero, configuration: BriefPageBridge.configuration())
         web.navigationDelegate = context.coordinator
         web.underPageBackgroundColor = Brand.oceanNS
         // Hidden until the page has drawn, so there's no white flash inside the dark panel.
@@ -534,10 +635,10 @@ struct BriefWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ web: WKWebView, context: Context) {
-        let key = "\(brief.day)|\(brief.modified.timeIntervalSince1970)|\(buttons)"
+        let key = "\(brief.day)|\(brief.modified.timeIntervalSince1970)|\(DoneStore.version)"
         guard context.coordinator.loadedKey != key else { return }
         context.coordinator.loadedKey = key
-        let url = BriefStore.rerender(brief, buttons: buttons)
+        let url = BriefStore.rerender(brief)
         web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
     }
 

@@ -37,7 +37,14 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .attn .listhead::before{background:var(--red)}
 .done .listhead{color:var(--green)}
 .done .listhead::before{background:var(--green)}
-.item{display:flex;gap:14px;margin:0 0 20px}
+.item{display:flex;gap:14px;margin:0 0 20px;align-items:flex-start}
+.tick{flex:none;width:22px;height:22px;border-radius:50%;border:1.5px solid var(--ink-grey);background:transparent;color:transparent;
+  cursor:pointer;margin-top:1px;padding:0;font:700 12px var(--sans);display:flex;align-items:center;justify-content:center}
+.tick:hover{border-color:var(--ink)}
+.tick:focus-visible,.title a:focus-visible,.desc a:focus-visible{outline:2px solid var(--ink);outline-offset:2px;border-radius:4px}
+.item.is-done .tick{background:var(--green);border-color:var(--green);color:#00293D}
+.item.is-done .title,.item.is-done .desc{opacity:.45}
+.item.is-done .title{text-decoration:line-through;text-decoration-color:var(--ink-grey)}
 .item:last-child{margin-bottom:0}
 .num{flex:none;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;
   font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--ink-soft);background:rgba(255,242,229,.08);margin-top:-1px}
@@ -52,10 +59,12 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 .desc a:hover{text-decoration-color:var(--ink)}
 .prose{font-size:14px;color:var(--ink-soft);margin:0}
 .prose+.item{margin-top:18px}
-.btn{display:inline-block;margin-top:10px;background:var(--red);color:#fff;border-radius:999px;padding:8px 16px;font:600 13px var(--sans);text-decoration:none}
-.btn:hover{background:var(--red-h)}
 .calm{font-size:15px;color:var(--ink-soft);margin:0}
 .note{font-size:13px;color:var(--ink-grey);margin:18px 4px 0}
+/* No calendar data: the terrain and the day's three parts stay out, and the headline sits alone. */
+.noday .drawing,.noday .acts{display:none}
+.noday .headline{margin-bottom:0}
+.noday .note{margin:14px 0 0}
 @media (max-width:640px){
   .wrap{padding:0 0 24px}
   .card{padding:20px 20px;border-radius:16px}
@@ -71,7 +80,7 @@ body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased
 </head>
 <body>
 <main class="wrap">
-  <section class="card">
+  <section class="card" id="head">
     <p class="daydate" id="daydate"></p>
     <h1 class="headline" id="headline"></h1>
     <svg class="drawing" id="drawing" viewBox="0 0 840 170" role="img" aria-label="The day drawn as terrain"></svg>
@@ -88,7 +97,6 @@ var INK="#FFF2E5",GREY="#6F8186",BG="#0F3547",CLAY="#F11F4C";
 var W=840,BASE=128,NS="http://www.w3.org/2000/svg";
 var payload=JSON.parse(document.getElementById("brief-data").textContent);
 var b=payload.brief||{},opts=payload.options||{};
-var buttonsOn=!!opts.buttons;
 
 function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e;}
 function isHttps(u){return typeof u==="string"&&/^https:\/\/[^\s]+$/i.test(u);}
@@ -171,10 +179,9 @@ firm.forEach(function(e,idx){if(inOverlap[idx])return;var cx=tx((e.s+e.e)/2);g.a
 events.filter(function(e){return e.optional;}).forEach(function(e){var cx=tx((e.s+e.e)/2);g.appendChild(svg("circle",{cx:cx.toFixed(1),cy:yAt(cx).toFixed(1),r:"6",fill:GREY}));});
 
 // motif (the single clay accent)
-var hasButtons=buttonsOn&&(b.needs_attention||[]).some(function(it){return it&&it.button&&it.button.label&&it.button.seed;});
 var clayKinds={sun:1,dawn:1,moon:1,birds:1,flag:1,fireworks:1};
 if(!events.length&&!acts.length){mk="none";}
-else if(!clayKinds[mk]&&!hasButtons){var open=colLoad.indexOf(Math.min.apply(null,colLoad));mc=open;mk="sun";}
+else if(!clayKinds[mk]){var open=colLoad.indexOf(Math.min.apply(null,colLoad));mc=open;mk="sun";}
 function skyY(c,need){return Math.max(need,Math.min(44,colTop(c)-30));}
 var cx0=140+mc*280,mg=svg("g",{stroke:CLAY,fill:"none","stroke-width":"1.6","stroke-linecap":"round"});
 if(mk==="sun"){var sy=skyY(mc,26);mg.appendChild(svg("circle",{cx:cx0,cy:sy,r:"10",fill:CLAY,"fill-opacity":"0.07"}));for(var k=0;k<8;k++){var an=k*Math.PI/4,r1=15,r2=21;mg.appendChild(svg("line",{x1:(cx0+r1*Math.cos(an)).toFixed(1),y1:(sy+r1*Math.sin(an)).toFixed(1),x2:(cx0+r2*Math.cos(an)).toFixed(1),y2:(sy+r2*Math.sin(an)).toFixed(1)}));}}
@@ -188,6 +195,8 @@ if(mg.childNodes.length)g.appendChild(mg);
 // ---- acts ----
 var actsEl=document.getElementById("acts");
 acts.forEach(function(a){var c=el("div","act");c.appendChild(el("p","time",a.label||""));c.appendChild(el("p","line",a.text||""));actsEl.appendChild(c);});
+var hasDay=events.length>0||acts.length>0;
+if(!hasDay)document.getElementById("head").classList.add("noday");
 
 // ---- lists ----
 var lists=document.getElementById("lists");
@@ -200,29 +209,38 @@ function linkedText(it){
   var a=el("a",null,ph);a.href=u;a.rel="noopener noreferrer";p.appendChild(a);
   p.appendChild(document.createTextNode(t.slice(at+ph.length)));return p;
 }
-function renderItems(container,items,allowButtons){
+// ---- done ticks: mirrors DoneStore.key(for:) in the app ----
+var doneKeys={};(opts.done||[]).forEach(function(k){doneKeys[k]=1;});
+function keyFor(it){return isHttps(it.url)?it.url:"t:"+String(it.title||"").trim().toLowerCase();}
+function bridge(){return window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.brief;}
+function renderItems(container,items,ticks){
   items.forEach(function(it,i){if(!it)return;
     var row=el("div","item");row.appendChild(el("div","num",String(i+1)));
     var body=el("div","item-body");var tt=el("p","title");
     if(isHttps(it.url)){var a=el("a",null,it.title||"");a.href=it.url;a.rel="noopener noreferrer";tt.appendChild(a);}else tt.textContent=it.title||"";
     body.appendChild(tt);body.appendChild(linkedText(it));
-    if(allowButtons&&it.button&&it.button.label&&it.button.seed){
-      var btn=el("a","btn",it.button.label);
-      btn.href="https://claude.ai/new?q="+encodeURIComponent(it.button.seed)+"&surface=cowork&composer=mini";
-      btn.rel="noopener noreferrer";var wrap=el("div");wrap.appendChild(btn);body.appendChild(wrap);
-    }
-    row.appendChild(body);container.appendChild(row);});
+    row.appendChild(body);
+    if(!ticks){container.appendChild(row);return;}
+    var key=keyFor(it);if(doneKeys[key])row.classList.add("is-done");
+    var tick=el("button","tick","\u2713");tick.type="button";
+    function label(d){tick.title=d?"Mark as not done":"Mark as done";tick.setAttribute("aria-label",tick.title);tick.setAttribute("aria-pressed",d?"true":"false");}
+    label(!!doneKeys[key]);
+    tick.addEventListener("click",function(){var now=!row.classList.contains("is-done");row.classList.toggle("is-done",now);
+      label(now);var h=bridge();if(h)h.postMessage({action:"done",key:key,title:it.title||"",done:now});});
+    row.appendChild(tick);container.appendChild(row);});
 }
 var na=(b.needs_attention||[]).filter(Boolean),rs=(b.resolved||[]).filter(Boolean);
 if(!na.length&&!rs.length){var c=el("section","card");c.appendChild(el("p","calm",b.empty_message||"Nothing needs you this morning."));lists.appendChild(c);}
 else{
-  [[na,labels.needs_attention||"Needs attention",true,"attn"],[rs,labels.resolved||"Resolved",false,"done"]].forEach(function(L){
-    if(!L[0].length)return;var s=el("section","card "+L[3]);s.appendChild(el("p","listhead",L[1]));renderItems(s,L[0],buttonsOn&&L[2]);lists.appendChild(s);});
+  // Resolved items are already closed and fall off by themselves, so only Needs attention gets ticks.
+  [[na,labels.needs_attention||"Needs attention","attn",true],[rs,labels.resolved||"Resolved","done",false]].forEach(function(L){
+    if(!L[0].length)return;var s=el("section","card "+L[2]);s.appendChild(el("p","listhead",L[1]));renderItems(s,L[0],L[3]);lists.appendChild(s);});
 }
 (b.sections||[]).forEach(function(sec){if(!sec)return;var items=(sec.items||[]).filter(Boolean);if(!items.length&&!sec.prose)return;
   var s=el("section","card");s.appendChild(el("p","listhead",sec.heading||""));
-  if(sec.prose)s.appendChild(el("p","prose",sec.prose));if(items.length)renderItems(s,items,false);lists.appendChild(s);});
-if(b.connect_note)lists.appendChild(el("p","note",b.connect_note));
+  if(sec.prose)s.appendChild(el("p","prose",sec.prose));if(items.length)renderItems(s,items,true);lists.appendChild(s);});
+// The note about what isn't connected explains the missing drawing, so without a day it goes up there.
+if(b.connect_note)(hasDay?lists:document.getElementById("head")).appendChild(el("p","note",b.connect_note));
 })();
 </script>
 </body>

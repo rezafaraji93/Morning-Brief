@@ -10,7 +10,7 @@ enum BriefError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingResource(let n): return "Missing app resource: \(n)"
-        case .noAgent: return "No agent found. Install Claude Code, Codex or Gemini CLI, or set a binary path in Settings."
+        case .noAgent: return "No agent found. Install Claude Code or Codex, or set a binary path in Settings."
         case .agentFailed(let m): return m
         case .timedOut(let m): return "The agent didn't finish within \(m) minutes."
         case .unparseable(let m): return "Couldn't read the agent's answer as a brief. \(m)"

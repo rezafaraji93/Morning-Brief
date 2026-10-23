@@ -1,10 +1,22 @@
 {
  "type": "object",
  "additionalProperties": false,
- "required": ["name", "about", "sections"],
+ "required": [
+  "name",
+  "about"
+ ],
  "properties": {
-  "name": {"type": ["string", "null"]},
-  "about": {"type": ["string", "null"]},
-  "sections": {"type": "array", "items": {"type": "string"}}
+  "name": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "about": {
+   "type": [
+    "string",
+    "null"
+   ]
+  }
  }
 }

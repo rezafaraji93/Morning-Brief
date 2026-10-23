@@ -11,16 +11,15 @@ final class WindowManager: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private var briefWindow: NSWindow?
     private var webView: WKWebView?
     private var settingsWindow: NSWindow?
+    private var panelWindow: NSWindow?
 
     func showBrief(_ b: StoredBrief) {
-        showBrief(url: BriefStore.rerender(b, buttons: AppState.shared.settings.includeButtons))
+        showBrief(url: BriefStore.rerender(b), title: b.displayName)
     }
 
-    func showBrief(url: URL) {
+    func showBrief(url: URL, title: String? = nil) {
         if briefWindow == nil {
-            let config = WKWebViewConfiguration()
-            config.websiteDataStore = .nonPersistent()
-            let web = WKWebView(frame: .zero, configuration: config)
+            let web = WKWebView(frame: .zero, configuration: BriefPageBridge.configuration())
             web.navigationDelegate = self
             web.underPageBackgroundColor = Brand.oceanNS
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 980),
@@ -34,7 +33,7 @@ final class WindowManager: NSObject, NSWindowDelegate, WKNavigationDelegate {
             briefWindow = w
             webView = web
         }
-        briefWindow?.title = "Morning Brief — " + url.deletingPathExtension().lastPathComponent
+        briefWindow?.title = "Morning Brief — " + (title ?? url.deletingPathExtension().lastPathComponent)
         webView?.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
         bringToFront(briefWindow)
     }
@@ -60,6 +59,23 @@ final class WindowManager: NSObject, NSWindowDelegate, WKNavigationDelegate {
             settingsWindow = w
         }
         bringToFront(settingsWindow)
+    }
+
+    /// The menu bar panel in an ordinary window: `MORNINGBRIEF_PANEL_WINDOW=1 swift run`, for
+    /// screenshots and UI work without reaching for the menu bar.
+    func showPanelWindow() {
+        if panelWindow == nil {
+            let host = NSHostingController(rootView: BriefPanel().environmentObject(AppState.shared))
+            let w = NSWindow(contentViewController: host)
+            w.title = "Morning Brief Panel"
+            w.styleMask = [.titled, .closable, .miniaturizable]
+            w.appearance = NSAppearance(named: .darkAqua)
+            w.backgroundColor = Brand.oceanNS
+            w.isReleasedWhenClosed = false
+            w.center()
+            panelWindow = w
+        }
+        bringToFront(panelWindow)
     }
 
     private func bringToFront(_ w: NSWindow?) {

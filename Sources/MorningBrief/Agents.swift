@@ -6,7 +6,6 @@ import Foundation
 /// restrictive mode that still lets it call read tools on MCP connectors:
 ///  - Claude Code: `--permission-mode auto` with the shell and file-editing tools disallowed.
 ///  - Codex: `--sandbox read-only`.
-///  - Gemini CLI: `--approval-mode plan` (read-only).
 /// Users can override or extend flags with "Extra arguments" in Settings.
 struct AgentRunner {
     let kind: AgentKind
@@ -64,15 +63,6 @@ struct AgentRunner {
             }
             if !model.isEmpty { a += ["-m", model] }
             return Invocation(args: a + extra + [prompt], outputFile: out)
-
-        case .gemini:
-            var a = ["-p", prompt, "--output-format", "json", "--skip-trust"]
-            // Read-only plan mode unless the user picked a mode under "Extra arguments".
-            if !extra.contains("--approval-mode") && !extra.contains("--yolo") && !extra.contains("-y") {
-                a += ["--approval-mode", "plan"]
-            }
-            if !model.isEmpty { a += ["-m", model] }
-            return Invocation(args: a + extra, outputFile: nil)
         }
     }
 
@@ -96,10 +86,6 @@ struct AgentRunner {
                 if !s.isEmpty { return s }
             }
             return stdout
-        case .gemini:
-            // {"response":"...","stats":{...}}
-            if let obj = jsonObject(stdout), let r = obj["response"] as? String { return r }
-            return stdout
         }
     }
 
@@ -109,21 +95,25 @@ struct AgentRunner {
         if kind == .claude, (obj["is_error"] as? Bool) == true {
             return (obj["result"] as? String) ?? "Claude Code reported an error."
         }
-        if kind == .gemini, let err = obj["error"] as? [String: Any] {
-            return (err["message"] as? String) ?? "Gemini CLI reported an error."
-        }
         return nil
     }
 
     private func jsonObject(_ s: String) -> [String: Any]? {
-        // The envelope is the last JSON object printed. Streamed output is one object per line and can
-        // run to megabytes, so try whole lines from the end first and scan for braces only as a fallback.
+        // The envelope is the "result" event. Streamed output is one object per line and can run to
+        // megabytes, so walk whole lines from the end; Claude Code may print bookkeeping events
+        // (task_summary) after the result, so keep looking a little past the last line.
+        var fallback: [String: Any]?
+        var checked = 0
         for line in s.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
             let t = line.trimmingCharacters(in: .whitespaces)
             guard t.hasPrefix("{"), t.hasSuffix("}"), let d = t.data(using: .utf8),
                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
-            return o
+            if o["type"] as? String == "result" { return o }
+            if fallback == nil { fallback = o }
+            checked += 1
+            if checked >= 20 { break }
         }
+        if let fallback { return fallback }
         for candidate in JSONExtract.objects(in: s).reversed() {
             if let d = candidate.data(using: .utf8),
                let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
@@ -158,8 +148,6 @@ struct AgentRunner {
             // "mcp: linear/get_user started"
             guard stream == .stderr, line.hasPrefix("mcp: "), line.hasSuffix(" started") else { return nil }
             return .tool(String(line.dropFirst(5).dropLast(8)))
-        case .gemini:
-            return nil
         }
     }
 
@@ -206,23 +194,6 @@ struct AgentRunner {
             u.totalTokens = n
             u.model = settings.model.isEmpty ? nil : settings.model
             return u
-        case .gemini:
-            // {"stats":{"models":{"<model>":{"tokens":{"prompt":…,"candidates":…,"total":…}}}}}
-            guard let o = jsonObject(stdout), let stats = o["stats"] as? [String: Any],
-                  let models = stats["models"] as? [String: [String: Any]] else { return nil }
-            var total = 0, prompt = 0, out = 0
-            for (name, m) in models {
-                u.model = u.model ?? name
-                let t = m["tokens"] as? [String: Any] ?? [:]
-                total += t["total"] as? Int ?? 0
-                prompt += t["prompt"] as? Int ?? 0
-                out += t["candidates"] as? Int ?? 0
-            }
-            guard total > 0 else { return nil }
-            u.totalTokens = total
-            u.inputTokens = prompt
-            u.outputTokens = out
-            return u
         }
     }
 }
@@ -252,7 +223,7 @@ extension AgentKind {
     }
 
     /// Recommended first. Claude's notes come from timed runs of the same brief over eight Slack
-    /// channels; Codex's and Gemini's rank the vendors' own descriptions and haven't been measured here.
+    /// channels; Codex's rank OpenAI's own descriptions and haven't been measured here.
     var modelOptions: [ModelOption] {
         switch self {
         case .claude:
@@ -279,15 +250,6 @@ extension AgentKind {
                 ModelOption(value: AgentKind.cliDefault, label: "Codex's own default",
                             note: "Whatever `codex` is set to."),
             ]
-        case .gemini:
-            return [
-                ModelOption(value: "gemini-2.5-pro", label: "Gemini 2.5 Pro — recommended",
-                            note: "Google's capable model, the best bet for a full brief. Not measured here yet."),
-                ModelOption(value: "gemini-2.5-flash", label: "Gemini 2.5 Flash — fastest",
-                            note: "Fast and cheap. Expect a thinner brief."),
-                ModelOption(value: AgentKind.cliDefault, label: "Gemini CLI's own default",
-                            note: "Whatever `gemini` is set to."),
-            ]
         }
     }
 
@@ -297,7 +259,6 @@ extension AgentKind {
         switch self {
         case .claude: return ["mcp", "add", "--transport", "http", "--scope", "user", name, url]
         case .codex:  return ["mcp", "add", name, "--url", url]
-        case .gemini: return ["mcp", "add", "-s", "user", "-t", "http", name, url]
         }
     }
 
@@ -306,7 +267,6 @@ extension AgentKind {
         switch self {
         case .claude: return "open Terminal, run `claude`, type /mcp"
         case .codex: return "open Terminal and run `codex mcp login <name>`"
-        case .gemini: return "open Terminal, run `gemini`, type /mcp auth <name>"
         }
     }
 
@@ -317,8 +277,6 @@ extension AgentKind {
             return "Added. To sign in: open Terminal, run `claude`, type /mcp, choose “\(name)” and authenticate. After that the brief can use it."
         case .codex:
             return "Added. If it didn't sign you in just now, open Terminal and run `codex mcp login \(name)`."
-        case .gemini:
-            return "Added. Open Terminal and run `gemini` once, then type /mcp auth \(name) to sign in."
         }
     }
 }
@@ -377,7 +335,7 @@ struct KnownTool: Identifiable, Hashable {
             switch kind {
             case .claude:
                 return "\(title) only lets approved apps sign in, so it can't be added from here. Turn it on at claude.ai under Settings → Connectors; Claude Code picks it up automatically and it shows as connected here."
-            case .codex, .gemini:
+            case .codex:
                 return "\(title) only lets approved apps sign in, so \(kind.displayName) can't add it from here. Claude Code can use it through claude.ai connectors (Settings → Connectors)."
             }
         case .token(let createAt):
@@ -386,8 +344,6 @@ struct KnownTool: Identifiable, Hashable {
                 return "\(title) signs in with a personal access token instead of the browser. Create a read-only token at \(createAt), then run in Terminal:\nclaude mcp add --transport http --scope user \(name) \(url) --header \"Authorization: Bearer YOUR_TOKEN\""
             case .codex:
                 return "\(title) signs in with a personal access token instead of the browser. Create a read-only token at \(createAt), then run in Terminal:\ncodex mcp add \(name) --url \(url) --bearer-token-env-var GITHUB_PAT\nCodex reads the token from GITHUB_PAT, so that variable has to be set where Codex runs."
-            case .gemini:
-                return "\(title) signs in with a personal access token instead of the browser. Create one at \(createAt) and add the server with an Authorization header in Gemini CLI's settings."
             }
         }
     }

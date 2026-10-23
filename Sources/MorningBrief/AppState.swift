@@ -30,6 +30,8 @@ final class AppState: ObservableObject {
     /// What the agent is doing while a brief is being written, from its live output.
     @Published private(set) var progress: RunProgress?
     @Published private(set) var agents: [AgentKind: String] = [:]
+    /// False until the first detection has finished, so an empty `agents` isn't shown as "none installed" too early.
+    @Published private(set) var agentsChecked = false
     @Published private(set) var recent: [StoredBrief] = []
     @Published var probeResult: String = ""
     @Published private(set) var probing = false
@@ -151,6 +153,11 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// The failure banner was closed: back to idle until the next run says otherwise.
+    func dismissFailure() {
+        if case .failed = status { status = .idle }
+    }
+
     // MARK: agents
 
     /// Full detection at launch, including a fresh read of the login shell's PATH.
@@ -180,9 +187,12 @@ final class AppState: ObservableObject {
         }.value
         var map: [AgentKind: String] = [:]
         for (k, p) in found { map[k] = p }
-        if generation == detectGeneration, map != agents {
-            agents = map
-            invalidateServers()
+        if generation == detectGeneration {
+            if map != agents {
+                agents = map
+                invalidateServers()
+            }
+            agentsChecked = true
         }
         return map
     }
@@ -210,7 +220,7 @@ final class AppState: ObservableObject {
         let installed = all.filter { after[$0] != nil }
 
         if after.isEmpty {
-            return Notice(tone: .warning, text: "No agents found. Install Claude Code, Codex or Gemini CLI, or set the program path above.")
+            return Notice(tone: .warning, text: "No agents found. Install Claude Code or Codex, or set the program path above.")
         }
         var parts: [String] = []
         if !added.isEmpty { parts.append("Found \(names(added)).") }
@@ -226,7 +236,7 @@ final class AppState: ObservableObject {
         return Notice(tone: lost.isEmpty ? .success : .warning, text: parts.joined(separator: " "))
     }
 
-    /// The agent to use: the one chosen in Settings, or the first installed (Claude, Codex, Gemini).
+    /// The agent to use: the one chosen in Settings, or the first installed (Claude, then Codex).
     /// With several agents installed, this picks one on its own — the user never has to.
     func resolvedAgent() -> (AgentKind, String)? {
         if let k = AgentKind(rawValue: settings.agent) {
@@ -320,8 +330,9 @@ final class AppState: ObservableObject {
                 guard let event = runner.event(stream: stream, line: line) else { return }
                 Task { @MainActor in AppState.shared.note(event) }
             })
-            let brief = try JSONExtract.brief(from: out.text)
-            let rendered = try BriefRenderer.render(brief, buttons: snapshot.includeButtons)
+            // Items the user already ticked off in an earlier brief don't come back.
+            let brief = DoneStore.strip(try JSONExtract.brief(from: out.text))
+            let rendered = try BriefRenderer.render(brief)
             let usage = runner.usage(stdout: out.stdout, stderr: out.stderr, seconds: out.seconds,
                                      toolCalls: progress?.toolCalls ?? 0)
             let url = try BriefStore.save(html: rendered.html, json: rendered.json, usage: usage, day: day)
@@ -433,11 +444,10 @@ final class AppState: ObservableObject {
     private struct Personalization: Decodable {
         var name: String?
         var about: String?
-        var sections: [String]?
     }
 
     /// Asks the active agent what it already knows about the user (from its own memory and
-    /// instruction files; it is told to call no tools) and fills the Brief settings with it.
+    /// instruction files; it is told to call no tools) and fills in the name and About you.
     /// With overwrite=false only empty fields are touched.
     func personalize(overwrite: Bool) async {
         guard !personalizing else { return }
@@ -476,12 +486,6 @@ final class AppState: ObservableObject {
                overwrite || settings.about.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 settings.about = a
                 filled.append("about you")
-            }
-            let secs = (p.sections ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-            if !secs.isEmpty,
-               overwrite || settings.sections.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                settings.sections = secs.joined(separator: "\n")
-                filled.append("extra sections")
             }
             personalizeStatus = filled.isEmpty
                 ? "\(kind.displayName) had nothing new to add. You can edit the fields by hand."
@@ -579,7 +583,6 @@ final class AppState: ObservableObject {
         switch kind {
         case .claude: args = ["mcp", "list"]
         case .codex: args = ["mcp", "list", "--json"]
-        case .gemini: return nil
         }
         guard let r = try? await ProcessRunner.run(executable: binary, args: args,
                                                    cwd: Paths.work, timeout: 90, logName: "mcp-list-\(kind.rawValue)"),

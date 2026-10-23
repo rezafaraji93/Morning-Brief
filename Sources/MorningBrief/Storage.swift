@@ -154,13 +154,81 @@ enum BriefStore {
 
     /// Re-renders a stored brief with the current template, so older briefs pick up design changes.
     /// Falls back to the saved page when its JSON is missing or no longer decodes.
-    static func rerender(_ b: StoredBrief, buttons: Bool) -> URL {
+    static func rerender(_ b: StoredBrief) -> URL {
         if let data = try? Data(contentsOf: jsonURL(day: b.day)),
            let brief = try? Brief.decoder.decode(Brief.self, from: data),
-           let rendered = try? BriefRenderer.render(brief, buttons: buttons),
+           let rendered = try? BriefRenderer.render(brief, done: DoneStore.keys()),
            (try? String(contentsOf: b.htmlURL, encoding: .utf8)) != rendered.html {
             try? rendered.html.write(to: b.htmlURL, atomically: true, encoding: .utf8)
         }
         return b.htmlURL
+    }
+}
+
+/// Items the user ticked off in a brief. A done item is struck through wherever it's shown, and
+/// the next runs leave it out, for 30 days. Safe from any thread; writes are rare and tiny.
+enum DoneStore {
+    struct Entry: Codable, Equatable {
+        let key: String      // the item's https link, or "t:" + its title when it has none
+        let title: String
+        let markedAt: Date
+    }
+
+    private static var url: URL { Paths.root.appendingPathComponent("done.json") }
+    private static let keepFor: TimeInterval = 30 * 86_400
+
+    private static let lock = NSLock()
+    private static var changes = 0
+    /// Bumped on every change, so a view showing a brief knows to redraw it.
+    static var version: Int { lock.withLock { changes } }
+
+    static func entries() -> [Entry] {
+        guard let data = try? Data(contentsOf: url),
+              let all = try? JSONDecoder().decode([Entry].self, from: data) else { return [] }
+        let cutoff = Date().addingTimeInterval(-keepFor)
+        return all.filter { $0.markedAt > cutoff }
+    }
+
+    static func keys() -> [String] { entries().map(\.key) }
+
+    /// Marked done within the last `days`, oldest first, for the prompt.
+    static func handled(days: Int) -> [Entry] {
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
+        return entries().filter { $0.markedAt > cutoff }.sorted { $0.markedAt < $1.markedAt }
+    }
+
+    static func set(key: String, title: String, done: Bool) {
+        var all = entries().filter { $0.key != key }
+        if done { all.append(Entry(key: key, title: title, markedAt: Date())) }
+        Paths.ensure()
+        if let data = try? JSONEncoder().encode(all) {
+            try? data.write(to: url, options: .atomic)
+        }
+        lock.withLock { changes += 1 }
+    }
+
+    /// Mirrors keyFor() in template.html.
+    static func key(for item: Brief.Item) -> String {
+        if let u = item.url, u.lowercased().hasPrefix("https://") { return u }
+        return "t:" + (item.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// The brief without the items that are already done; a section left with nothing is dropped.
+    static func strip(_ brief: Brief) -> Brief {
+        let done = Set(keys())
+        guard !done.isEmpty else { return brief }
+        func keep(_ items: [Brief.Item]?) -> [Brief.Item]? {
+            items?.filter { !done.contains(key(for: $0)) }
+        }
+        var b = brief
+        b.needsAttention = keep(b.needsAttention)
+        b.resolved = keep(b.resolved)
+        b.sections = b.sections?.compactMap { section in
+            var s = section
+            s.items = keep(s.items)
+            let empty = (s.items ?? []).isEmpty && (s.prose ?? "").isEmpty
+            return empty ? nil : s
+        }
+        return b
     }
 }

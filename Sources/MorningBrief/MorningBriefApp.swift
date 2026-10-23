@@ -26,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             UNUserNotificationCenter.current().delegate = self
         }
         Task { @MainActor in AppState.shared.start() }
+        if ProcessInfo.processInfo.environment["MORNINGBRIEF_PANEL_WINDOW"] == "1" {
+            WindowManager.shared.showPanelWindow()
+        }
     }
 
     // Show the banner even if the app happens to be frontmost.

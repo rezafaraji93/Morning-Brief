@@ -1,20 +1,25 @@
 import Foundation
 
 enum PromptBuilder {
-    static let buttonsOn = """
-    Include action buttons. For a needs_attention item an assistant could actually move forward (a reply to draft, \
-    something to research, a doc to write together, options to think through), give {label, seed}. label: imperative, \
-    5 words or fewer, naming what pressing it produces ("Draft the reply"); different items get different labels. \
-    seed: a self-contained work order in prose for a fresh assistant. It names the situation by reference, never by \
-    quotation (who asked, which tool their message lives in, roughly when, what kind of ask); what is owed and to whom; \
-    which tools it can reach; and what done looks like (a draft, a decision, a doc). It carries no verbatim words from \
-    anyone else. Emails can only be drafted, never sent. Use null for decisions only they can make, places they need to \
-    be, anything touching money, health or credentials, and always on resolved items.
-    """
-    static let buttonsOff = "always null."
+
+    /// The built-in instructions, as shipped in Resources/prompt.md.
+    static func defaultTemplate() throws -> String { try Res.string("prompt", "md") }
+
+    /// The placeholders a prompt may use; each is filled in at run time.
+    static let placeholders = ["{{NAME}}", "{{ABOUT}}", "{{LANGUAGE}}", "{{TODAY}}", "{{NOW}}", "{{TIMEZONE}}", "{{SINCE}}",
+                               "{{SECTIONS}}", "{{CHANNEL_STEPS}}", "{{CHANNEL_SORT}}", "{{CHANNEL_SECTIONS}}",
+                               "{{HANDLED}}", "{{SCHEMA}}"]
+
+    /// The template a brief runs on: the user's own when enabled and not blank, else the built-in one.
+    /// A custom prompt that forgot the output schema gets it appended, or the agent couldn't answer at all.
+    static func template(settings: AppSettings) throws -> String {
+        let custom = settings.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard settings.customPromptEnabled, !custom.isEmpty else { return try defaultTemplate() }
+        return custom.contains("{{SCHEMA}}") ? custom : custom + "\n\n## Output schema\n\n{{SCHEMA}}"
+    }
 
     static func build(settings: AppSettings, now: Date = Date()) throws -> String {
-        let tpl = try Res.string("prompt", "md")
+        let tpl = try template(settings: settings)
         let schema = try Res.string("brief.schema", "json")
 
         let day = DateFormatter()
@@ -39,7 +44,6 @@ enum PromptBuilder {
         let who = name.isEmpty ? "the user" : name
         let since = sinceDescription(now: now, weekdaysOnly: settings.weekdaysOnly)
         let watch = AppSettings.channelList(settings.watchChannels)
-        let digest = AppSettings.channelList(settings.digestChannels)
         var channelSteps = "", channelSort = "", channelSections = ""
         if !watch.isEmpty {
             channelSteps += """
@@ -65,21 +69,32 @@ enum PromptBuilder {
             """
             channelSections += "\"Worth a look\", "
         }
-        if !digest.isEmpty {
+        let emoji = settings.todoEnabled ? AppSettings.emojiName(settings.todoEmoji) : ""
+        if !emoji.isEmpty {
             channelSteps += """
 
-               - Summarized channels (\(digest.joined(separator: ", "))): read every message since \(since) and \
-            note the one to three most significant things in each (decisions, releases, incidents, open questions).
+               - Flagged messages: everything \(who) has reacted to with :\(emoji):, however old (in Slack, one \
+            search with the filter hasmy::\(emoji):). That reaction is their to-do mark: it stays until they've dealt \
+            with the message, so every result is still open.
             """
             channelSort += """
-            - Channel summaries: one section per summarized channel, headed with the channel name, one to three \
-            items or one line of prose. Summarize what happened there whether or not it concerns \(who).
+            - Flagged: the flagged messages, for a section headed "Flagged in Slack" (in {{LANGUAGE}}), newest \
+            first, at most 6; with more than 6, add one line of prose saying how many older ones there are and the \
+            date of the oldest. Title: what it is, in your words. Text: who posted it where, and how old the message \
+            is ("from 3 days ago"). One with a deadline today or tomorrow goes to needs_attention instead.
 
             """
-            channelSections += "one section per summarized channel, "
+            channelSections += "\"Flagged in Slack\", "
         }
 
+        let handled = DoneStore.handled(days: 14)
+        let handledText = handled.isEmpty ? "" : "\n- Already handled: \(who) ticked these off in the app, so leave them out unless " +
+            "something new has happened since: " + handled.map { e in
+                e.key.hasPrefix("https://") ? "\"\(e.title)\" (\(e.key))" : "\"\(e.title)\""
+            }.joined(separator: "; ") + "."
+
         let replacements: [String: String] = [
+            "{{HANDLED}}": handledText,
             "{{CHANNEL_STEPS}}": channelSteps,
             "{{CHANNEL_SORT}}": channelSort,
             "{{CHANNEL_SECTIONS}}": channelSections,
@@ -91,7 +106,6 @@ enum PromptBuilder {
             "{{LANGUAGE}}": settings.language.isEmpty ? "English" : settings.language,
             "{{ABOUT}}": about.isEmpty ? "(nothing specific; use judgement)" : about,
             "{{SECTIONS}}": sections,
-            "{{BUTTONS}}": settings.includeButtons ? buttonsOn : buttonsOff,
             "{{SCHEMA}}": schema,
         ]
         // Channel text contains {{LANGUAGE}}, so fill it in before the plain placeholders.
@@ -150,10 +164,7 @@ enum PromptBuilder {
     this user (for example your user-level memory or instruction files). Return ONLY one JSON object, no prose: \
     {"name": their first name or null, "about": one or two sentences of setup notes about them — role, team, and \
     which tools matter for a daily work brief, but not whether they are connected or signed in right now — or null \
-    if you know nothing, "sections": up to three \
-    short extra-section ideas for their brief as plain strings (empty array if none)}. Example section: \
-    "#releases channel: anything shipped or rolled back". If you know nothing about this user, return \
-    {"name":null,"about":null,"sections":[]}.
+    if you know nothing}. If you know nothing about this user, return {"name":null,"about":null}.
     """
 
     /// Asks only for exact tool names; the app maps them to roles (MCPList.servers(fromToolNames:)).
@@ -167,16 +178,16 @@ enum PromptBuilder {
 
 enum BriefRenderer {
     private struct Payload: Encodable {
-        struct Options: Encodable { var buttons: Bool }
+        struct Options: Encodable { var done: [String] }
         var brief: Brief
         var options: Options
     }
 
     /// Fills Resources/template.html with the brief as an inert JSON data island.
     /// The page's own script draws everything with textContent, so agent text can't become markup.
-    static func render(_ brief: Brief, buttons: Bool) throws -> (html: String, json: Data) {
+    static func render(_ brief: Brief, done: [String] = []) throws -> (html: String, json: Data) {
         let template = try Res.string("template", "html")
-        let json = try Brief.encoder.encode(Payload(brief: brief, options: .init(buttons: buttons)))
+        let json = try Brief.encoder.encode(Payload(brief: brief, options: .init(done: done)))
         guard var island = String(data: json, encoding: .utf8) else {
             throw BriefError.unparseable("Couldn't encode the brief.")
         }

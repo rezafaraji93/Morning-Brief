@@ -1,7 +1,7 @@
 import Foundation
 
 enum AgentKind: String, CaseIterable, Codable, Identifiable {
-    case claude, codex, gemini
+    case claude, codex
 
     var id: String { rawValue }
 
@@ -9,7 +9,6 @@ enum AgentKind: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .claude: return "Claude Code"
         case .codex: return "Codex"
-        case .gemini: return "Gemini CLI"
         }
     }
 
@@ -39,10 +38,14 @@ struct AppSettings: Codable, Equatable {
     var sections: String = ""
     /// Slack channels the brief reads in full but reports only what concerns the user from.
     var watchChannels: String = ""
-    /// Slack channels that always get a short daily summary, whatever they're about.
-    var digestChannels: String = ""
-    var includeButtons: Bool = false
+    /// Messages the user reacted to with `todoEmoji` are their to-do list for the brief.
+    var todoEnabled: Bool = true
+    /// Emoji name (no colons).
+    var todoEmoji: String = "bookmark"
     var timeoutMinutes: Int = 15
+    /// The user's own instructions for the brief, used in place of Resources/prompt.md when enabled.
+    var customPromptEnabled: Bool = false
+    var customPrompt: String = ""
 
     init() {}
 
@@ -62,9 +65,11 @@ struct AppSettings: Codable, Equatable {
         about = try c.decodeIfPresent(String.self, forKey: .about) ?? d.about
         sections = try c.decodeIfPresent(String.self, forKey: .sections) ?? d.sections
         watchChannels = try c.decodeIfPresent(String.self, forKey: .watchChannels) ?? d.watchChannels
-        digestChannels = try c.decodeIfPresent(String.self, forKey: .digestChannels) ?? d.digestChannels
-        includeButtons = try c.decodeIfPresent(Bool.self, forKey: .includeButtons) ?? d.includeButtons
+        todoEnabled = try c.decodeIfPresent(Bool.self, forKey: .todoEnabled) ?? d.todoEnabled
+        todoEmoji = try c.decodeIfPresent(String.self, forKey: .todoEmoji) ?? d.todoEmoji
         timeoutMinutes = try c.decodeIfPresent(Int.self, forKey: .timeoutMinutes) ?? d.timeoutMinutes
+        customPromptEnabled = try c.decodeIfPresent(Bool.self, forKey: .customPromptEnabled) ?? d.customPromptEnabled
+        customPrompt = try c.decodeIfPresent(String.self, forKey: .customPrompt) ?? d.customPrompt
     }
 
     private static let key = "MorningBrief.settings.v1"
@@ -91,6 +96,45 @@ struct AppSettings: Codable, Equatable {
             .filter { !$0.isEmpty && $0 != "#" }
             .map { $0.hasPrefix("#") ? $0 : "#" + $0 }
             .filter { seen.insert($0.lowercased()).inserted }
+    }
+
+    /// Emojis offered for the to-do mark, with the names Slack uses for them.
+    struct TodoEmoji: Identifiable, Hashable {
+        let name: String
+        let glyph: String
+        let title: String
+        var id: String { name }
+
+        static let catalog: [TodoEmoji] = [
+            TodoEmoji(name: "bookmark", glyph: "🔖", title: "Bookmark"),
+            TodoEmoji(name: "pushpin", glyph: "📌", title: "Pushpin"),
+            TodoEmoji(name: "eyes", glyph: "👀", title: "Eyes"),
+            TodoEmoji(name: "white_check_mark", glyph: "✅", title: "Check mark"),
+            TodoEmoji(name: "memo", glyph: "📝", title: "Memo"),
+            TodoEmoji(name: "star", glyph: "⭐", title: "Star"),
+            TodoEmoji(name: "alarm_clock", glyph: "⏰", title: "Alarm clock"),
+            TodoEmoji(name: "hourglass_flowing_sand", glyph: "⏳", title: "Hourglass"),
+            TodoEmoji(name: "inbox_tray", glyph: "📥", title: "Inbox"),
+            TodoEmoji(name: "bulb", glyph: "💡", title: "Bulb"),
+            TodoEmoji(name: "dart", glyph: "🎯", title: "Dart"),
+            TodoEmoji(name: "zap", glyph: "⚡", title: "Zap"),
+            TodoEmoji(name: "bell", glyph: "🔔", title: "Bell"),
+            TodoEmoji(name: "clipboard", glyph: "📋", title: "Clipboard"),
+            TodoEmoji(name: "hammer_and_wrench", glyph: "🛠️", title: "Tools"),
+            TodoEmoji(name: "bug", glyph: "🐛", title: "Bug"),
+            TodoEmoji(name: "rocket", glyph: "🚀", title: "Rocket"),
+            TodoEmoji(name: "point_up", glyph: "☝️", title: "Point up"),
+            TodoEmoji(name: "exclamation", glyph: "❗", title: "Exclamation"),
+            TodoEmoji(name: "question", glyph: "❓", title: "Question"),
+        ]
+
+        static func named(_ name: String) -> TodoEmoji? { catalog.first { $0.name == name } }
+    }
+
+    /// ":bookmark:" or " Bookmark " → "bookmark"; anything that isn't an emoji name → "".
+    static func emojiName(_ raw: String) -> String {
+        let n = raw.trimmingCharacters(in: CharacterSet(charactersIn: ": \t\n")).lowercased()
+        return n.range(of: "^[a-z0-9_+-]+$", options: .regularExpression) != nil ? n : ""
     }
 
     static func defaultFirstName() -> String {

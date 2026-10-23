@@ -11,6 +11,7 @@ struct SettingsView: View {
     @State private var customName = ""
     @State private var newToolURL = ""
     @State private var showAdvanced = false
+    @State private var customEmoji = false
 
     // MARK: derived bindings
 
@@ -63,16 +64,19 @@ struct SettingsView: View {
                 briefSection
                 slackSection
                 connectionsSection
+                promptSection
                 advancedSection
             }
             .padding(.bottom, 4)
         }
-        .scrollIndicators(.never)
+        .scrollIndicators(.automatic)
         .tint(Brand.red)
         .task(id: serverRefreshKey) { await state.refreshServers() }
         .environment(\.colorScheme, .dark)
         .onAppear {
             state.detectNotice = nil
+            let e = AppSettings.emojiName(state.settings.todoEmoji)
+            customEmoji = !e.isEmpty && AppSettings.TodoEmoji.named(e) == nil
             let m = state.settings.model
             customModel = !m.isEmpty && !effectiveKind.modelOptions.contains(where: { $0.value == m })
         }
@@ -115,6 +119,33 @@ struct SettingsView: View {
             Caption(modelNote)
             Caption(agentFooter)
         }
+    }
+
+    private var emojiSelection: Binding<String> {
+        Binding(
+            get: {
+                if customEmoji { return "custom" }
+                let n = AppSettings.emojiName(state.settings.todoEmoji)
+                if n.isEmpty { return "" }
+                return AppSettings.TodoEmoji.named(n) != nil ? n : "custom"
+            },
+            set: { v in
+                if v == "custom" {
+                    customEmoji = true
+                } else {
+                    customEmoji = false
+                    state.settings.todoEmoji = v
+                }
+            }
+        )
+    }
+
+    private var emojiLabel: String {
+        let n = AppSettings.emojiName(state.settings.todoEmoji)
+        if customEmoji { return n.isEmpty ? "Other…" : ":\(n):" }
+        if n.isEmpty { return "Choose…" }
+        if let e = AppSettings.TodoEmoji.named(n) { return "\(e.glyph)  \(e.title)" }
+        return ":\(n):"
     }
 
     /// Catalog tools the active agent doesn't have yet.
@@ -163,9 +194,9 @@ struct SettingsView: View {
 
     private var agentFooter: String {
         if state.agents.isEmpty {
-            return "No agent found yet. Install Claude Code, Codex or Gemini CLI, or point to one under Advanced."
+            return "No agent found yet. Install Claude Code or Codex, or point to one under Advanced."
         }
-        return "Automatic prefers Claude Code, then Codex, then Gemini. Nothing to configure."
+        return "Automatic prefers Claude Code, then Codex. Nothing to configure."
     }
 
     private var scheduleSection: some View {
@@ -197,17 +228,16 @@ struct SettingsView: View {
                 }
             }
             LabeledField("About you") {
-                BrandEditor(text: $state.settings.about)
+                BrandEditor(text: $state.settings.about,
+                            placeholder: "Android engineer on the Users team; include Linear issues assigned to me.",
+                            minHeight: 80)
             }
-            Caption("Role and tools that matter, e.g. “Android engineer on the Users team; include Linear issues assigned to me.”")
+            Caption("Your role and the tools that matter. The agent reads this before every brief.")
             LabeledField("Extra sections, one per line") {
-                BrandEditor(text: $state.settings.sections)
+                BrandEditor(text: $state.settings.sections,
+                            placeholder: "#android-releases: anything shipped or rolled back")
             }
-            Caption("e.g. “#android-releases: anything shipped or rolled back”.")
-            SettingsRow("Action buttons") {
-                Toggle("Action buttons", isOn: $state.settings.includeButtons).labelsHidden().toggleStyle(.switch)
-            }
-            Caption("Adds a button to items Claude could move forward; it opens a prefilled Claude chat.")
+            Caption("Each line becomes a section of its own in the brief.")
             Divider().overlay(Brand.ink.opacity(0.08))
             HStack(spacing: 12) {
                 Button(state.personalizing ? "Asking your agent…" : "Fill from your agent's memory") {
@@ -220,7 +250,7 @@ struct SettingsView: View {
             if !state.personalizeStatus.isEmpty {
                 StatusNote(state.personalizeStatus)
             }
-            Caption("Asks your agent what it already knows about you and fills the fields above. It calls no tools and reads none of your data.")
+            Caption("Asks your agent what it already knows about you and fills in your name and About you. It calls no tools and reads none of your data.")
         }
     }
 
@@ -231,10 +261,25 @@ struct SettingsView: View {
                            multiline: true)
             }
             Caption("Read in full every morning (Friday to Sunday on Mondays), but only what concerns you makes the brief: your name, your work, decisions that change it, and asks to everyone with a deadline.")
-            LabeledField("Channels to summarize") {
-                BrandField(placeholder: "#android-releases", text: $state.settings.digestChannels, multiline: true)
+            SettingsRow("Flagged messages") {
+                Toggle("Flagged messages", isOn: $state.settings.todoEnabled).labelsHidden().toggleStyle(.switch)
             }
-            Caption("Always get a short summary, whatever they're about.")
+            if state.settings.todoEnabled {
+                SettingsRow("To-do emoji") {
+                    BrandMenu(label: emojiLabel) {
+                        Picker("To-do emoji", selection: emojiSelection) {
+                            ForEach(AppSettings.TodoEmoji.catalog) { e in
+                                Text("\(e.glyph)  \(e.title)").tag(e.name)
+                            }
+                            Text("Other…").tag("custom")
+                        }
+                    }
+                }
+                if customEmoji {
+                    BrandField(placeholder: "Emoji name as Slack spells it, e.g. ticket", text: $state.settings.todoEmoji)
+                }
+            }
+            Caption("React with this emoji on any message and it stays under \u{201C}Flagged in Slack\u{201D} until you remove the reaction. Other… takes any emoji name, including your workspace's own. Slack's own To-dos list isn't readable by the agent; this stands in for it.")
             HStack(spacing: 12) {
                 Button(state.suggestingChannels ? "Looking at your Slack…" : "Suggest from Slack") {
                     Task { await state.suggestChannels() }
@@ -308,6 +353,40 @@ struct SettingsView: View {
                 StatusNote(state.connectStatus)
             }
             Caption("The brief sees whatever your agent sees. Tools it already has don't appear in the list. Pick one (or Other server… for any MCP URL) and sign in once in the browser.")
+        }
+    }
+
+    private var promptSection: some View {
+        SettingsCard(title: "Prompt") {
+            SettingsRow("Use my own prompt") {
+                Toggle("Use my own prompt", isOn: $state.settings.customPromptEnabled).labelsHidden().toggleStyle(.switch)
+            }
+            .onChange(of: state.settings.customPromptEnabled) { on in
+                // Start from the built-in instructions rather than a blank page.
+                if on, state.settings.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   let d = try? PromptBuilder.defaultTemplate() {
+                    state.settings.customPrompt = d
+                }
+            }
+            if state.settings.customPromptEnabled {
+                BrandEditor(text: $state.settings.customPrompt, minHeight: 320, monospaced: true)
+                HStack(spacing: 12) {
+                    Button("Reset to default") {
+                        if let d = try? PromptBuilder.defaultTemplate() { state.settings.customPrompt = d }
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    Button("Copy today's full prompt") {
+                        if let p = try? PromptBuilder.build(settings: state.settings) {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(p, forType: .string)
+                        }
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                }
+                Caption("Placeholders are filled in when the brief runs: " + PromptBuilder.placeholders.joined(separator: " ") + ". Keep {{SCHEMA}} at the end so the agent knows the answer format; it's added for you if missing. The ground rules about staying read-only are part of the prompt, so keep them.")
+            } else {
+                Caption("The brief runs on the built-in instructions. Turn this on to edit a copy of them; off brings the built-in ones back, and your copy is kept.")
+            }
         }
     }
 
@@ -437,17 +516,32 @@ private struct LabeledField<Field: View>: View {
     }
 }
 
+/// A soft outline on the field that has keyboard focus, since the plain field styles draw none.
+private struct FocusRing: View {
+    let on: Bool
+    let radius: CGFloat
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .strokeBorder(Brand.ink.opacity(on ? 0.45 : 0), lineWidth: 1.5)
+            .animation(.easeOut(duration: 0.12), value: on)
+            .allowsHitTesting(false)
+    }
+}
+
 private struct BrandField: View {
     let placeholder: String
     @Binding var text: String
     /// Grows to a few lines instead of scrolling sideways.
     var multiline = false
+    @FocusState private var focused: Bool
 
     var body: some View {
         // Own placeholder instead of the prompt, which macOS draws in a dim system grey.
         TextField("", text: $text, axis: multiline ? .vertical : .horizontal)
             .lineLimit(multiline ? 1...4 : 1...1)
             .textFieldStyle(.plain)
+            .focused($focused)
             .font(Brand.font(14))
             .foregroundStyle(Brand.ink)
             .background(alignment: .topLeading) {
@@ -463,21 +557,38 @@ private struct BrandField: View {
             .padding(.vertical, multiline ? 8 : 0)
             .frame(minHeight: 34)
             .background(Brand.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(FocusRing(on: focused, radius: 10))
     }
 }
 
 private struct BrandEditor: View {
     @Binding var text: String
+    var placeholder = ""
+    var minHeight: CGFloat = 64
+    var monospaced = false
+    @FocusState private var focused: Bool
 
     var body: some View {
         TextEditor(text: $text)
-            .font(Brand.font(14))
+            .font(monospaced ? .system(size: 12, design: .monospaced) : Brand.font(14))
             .foregroundStyle(Brand.ink)
             .scrollContentBackground(.hidden)
+            .focused($focused)
             .padding(.horizontal, 7)
             .padding(.vertical, 8)
-            .frame(minHeight: 64)
+            .frame(minHeight: minHeight)
+            .background(alignment: .topLeading) {
+                if text.isEmpty, !placeholder.isEmpty {
+                    Text(placeholder)
+                        .font(Brand.font(14))
+                        .foregroundStyle(Brand.placeholder)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+            }
             .background(Brand.raised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(FocusRing(on: focused, radius: 10))
     }
 }
 
@@ -499,6 +610,7 @@ private struct BrandMenu<Items: View>: View {
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
+            .tint(Brand.ink)
             .fixedSize()
             Image(systemName: "chevron.up.chevron.down")
                 .font(.system(size: 10, weight: .semibold))
@@ -663,13 +775,16 @@ private struct StatusNote: View {
 /// Secondary action: a raised pill, quieter than the red primary one.
 struct SecondaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+    var height: CGFloat
+
+    init(height: CGFloat = 32) { self.height = height }
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Brand.font(13.5, .semibold))
             .foregroundStyle(Brand.ink.opacity(isEnabled ? 1 : 0.4))
             .padding(.horizontal, 16)
-            .frame(height: 32)
+            .frame(height: height)
             .background(configuration.isPressed ? Brand.raised.opacity(0.7) : Brand.raised, in: Capsule())
             .contentShape(Capsule())
     }
