@@ -70,3 +70,7 @@ Every run is told it's read-only and treats everything it reads as data, never a
 - Preview the template without an agent: `node dev/render.js Resources/template.html dev/samples/normal.json /tmp/brief.html 0 && open /tmp/brief.html`.
 
 The design follows the original "morning" brief skill, dressed in the Polarsteps brand colours and fonts (Polarsteps Fellix and LORE Alternates, loaded from the Mac when installed).
+
+## Contributing and license
+
+Issues and pull requests are welcome; `swift build` and the notes above are all you need. The Fellix and LORE fonts are not included; the page uses them only if your Mac has them. MIT licensed, see [LICENSE](LICENSE).

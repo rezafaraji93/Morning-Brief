@@ -1,5 +1,5 @@
 {"date_line":"Thursday · October 22 2026","direction":"ltr","day_class":"heavy",
-"headline":"A steady climb until 2, Reza, then the day opens up.",
+"headline":"A steady climb until 2, Sam, then the day opens up.",
 "labels":{"needs_attention":"Needs attention","resolved":"Resolved"},
 "events":[{"title":"A","start":"09:00","end":"10:00","optional":false},{"title":"B","start":"10:00","end":"11:30","optional":false},{"title":"C","start":"11:00","end":"12:00","optional":false},{"title":"D","start":"12:30","end":"14:00","optional":false},{"title":"E","start":"16:00","end":"16:30","optional":true}],
 "motif":{"kind":"ridge","act":1},

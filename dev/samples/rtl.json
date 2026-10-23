@@ -4,5 +4,5 @@
 "events":[{"title":"Stand Up","start":"09:45","end":"10:00","optional":false},{"title":"Refinement","start":"10:00","end":"11:00","optional":false},{"title":"1-1","start":"15:30","end":"15:55","optional":false}],
 "motif":{"kind":"none","act":2},
 "acts":[{"label":"۹:۴۵ تا ۱۱","start":"09:45","end":"11:00","text":"جلسه‌ی روزانه و بعد یک ساعت ریفاینمنت."},{"label":"۱۱ تا ۱۵:۳۰","start":"11:00","end":"15:30","text":"چهار ساعت و نیم آزاد."},{"label":"از ۱۵:۳۰","start":"15:30","end":"23:59","text":"یک جلسه‌ی کوتاه و بعد عصر آزاد."}],
-"needs_attention":[{"title":"مرتب کردن بورد اسپرینت","text":"آندری امروز صبح در پیام خصوصی گفت یک تیکت کم است.","source_phrase":"در پیام خصوصی","url":"https://polarsteps.slack.com/archives/D0ACRMW1QTB/p1792480784673429","button":null}],
+"needs_attention":[{"title":"مرتب کردن بورد اسپرینت","text":"آندری امروز صبح در پیام خصوصی گفت یک تیکت کم است.","source_phrase":"در پیام خصوصی","url":"https://example.slack.com/archives/C0EXAMPLE/p1700000000000000","button":null}],
 "resolved":[],"sections":[],"empty_message":null,"connect_note":null,"sources_used":["calendar","slack"]}
