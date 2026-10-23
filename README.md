@@ -51,7 +51,7 @@ Every run is told it's read-only and treats everything it reads as data, never a
 
 | Agent | How it runs |
 |---|---|
-| Claude Code | `--permission-mode auto`; shell, editing, subagents, file search and web tools disallowed |
+| Claude Code | `--permission-mode auto`; shell, editing, subagents, file search and web tools disallowed, and every connector tool that writes (Slack send/react/schedule, Calendar create/update/delete, Gmail send/trash/label, Linear save/delete, Notion create/update/delete, Granola folders) denied by name, so a run can only read |
 | Codex | `exec --sandbox read-only --ephemeral` |
 
 ## Files

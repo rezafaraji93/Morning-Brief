@@ -4,7 +4,8 @@ import Foundation
 ///
 /// Safety model: the prompt forbids any write action, and each agent is started in its most
 /// restrictive mode that still lets it call read tools on MCP connectors:
-///  - Claude Code: `--permission-mode auto` with the shell and file-editing tools disallowed.
+///  - Claude Code: `--permission-mode auto` with the shell, file-editing, subagent, search and web
+///    tools disallowed, plus every connector tool that writes (see connectorWriteTools).
 ///  - Codex: `--sandbox read-only`.
 /// Users can override or extend flags with "Extra arguments" in Settings.
 struct AgentRunner {
@@ -29,6 +30,54 @@ struct AgentRunner {
         let outputFile: URL?
     }
 
+    /// The connectors' tools that change something, denied outright so "read-only" doesn't rest on
+    /// the prompt alone. Each name is listed under the claude.ai connector's server name and under
+    /// the plain name a server gets when added by hand (`claude mcp add slack …`).
+    static let connectorWriteTools: [String] = {
+        let servers: [(claudeAI: String, plain: [String], tools: [String])] = [
+            ("claude_ai_Slack", ["slack"],
+             ["slack_send_message", "slack_send_message_draft", "slack_schedule_message", "slack_add_reaction",
+              "slack_create_canvas", "slack_update_canvas", "slack_create_conversation"]),
+            ("claude_ai_Google_Calendar", ["google-calendar", "google_calendar", "calendar"],
+             ["create_event", "update_event", "delete_event", "respond_to_event"]),
+            ("claude_ai_Gmail", ["gmail"],
+             ["send_message", "reply", "forward", "create_draft", "update_draft", "delete_draft",
+              "trash_message", "trash_thread", "untrash_message", "untrash_thread",
+              "label_message", "label_thread", "unlabel_message", "unlabel_thread", "update_message_labels",
+              "create_label", "update_label", "delete_label", "mark_message_spam", "mark_thread_spam",
+              "unmark_message_spam", "unmark_thread_spam", "apply_sensitive_message_label", "apply_sensitive_thread_label"]),
+            ("claude_ai_Granola", ["granola"],
+             ["create_folder", "update_folder", "add_note_to_folder", "remove_note_from_folder", "sign_out"]),
+            ("claude_ai_Linear", ["linear"],
+             ["save_issue", "save_project", "save_initiative", "save_milestone", "save_release", "save_release_note",
+              "save_status_update", "save_document", "save_comment", "save_diff_comment", "save_issue_label",
+              "save_project_label", "save_initiative_label", "create_issue_label", "create_initiative_label",
+              "create_attachment", "create_attachment_from_upload", "prepare_attachment_upload", "delete_attachment",
+              "delete_comment", "delete_diff_comment", "delete_status_update", "merge_diff", "update_diff",
+              "submit_diff_review", "resolve_diff_thread", "share_issue", "unshare_issue", "mark_notification",
+              "retire_issue_label", "retire_project_label", "retire_initiative_label",
+              "restore_issue_label", "restore_project_label", "restore_initiative_label"]),
+            ("claude_ai_Notion", ["notion"],
+             ["notion-create-pages", "notion-update-page", "notion-delete-pages", "notion-restore-pages",
+              "notion-move-pages", "notion-duplicate-page", "notion-create-database", "notion-delete-databases",
+              "notion-update-data-source", "notion-create-view", "notion-update-view", "notion-create-comment",
+              "notion-update-comment", "notion-delete-comment", "notion-set-comment-reaction",
+              "notion-set-discussion-resolved", "notion-create-folder", "notion-update-folder",
+              "notion-create-attachment", "notion-create-file-upload", "notion-upload-skill",
+              "notion-update-enabled-skills", "notion-convert-page-to-skill", "notion-spawn-session",
+              "notion-stop-session", "notion-send-message-to-session", "notion-calendar-create-events",
+              "notion-calendar-update-events", "notion-calendar-cancel-events"]),
+        ]
+        var names: [String] = []
+        for server in servers {
+            for tool in server.tools {
+                names.append("mcp__\(server.claudeAI)__\(tool)")
+                for plain in server.plain { names.append("mcp__\(plain)__\(tool)") }
+            }
+        }
+        return names
+    }()
+
     func invocation(prompt: String, mode: Mode, claudePermissionMode: String = "auto") throws -> Invocation {
         let model = kind.resolveModel(settings.model)
         let extra = ArgSplitter.split(settings.extraArgs)
@@ -43,7 +92,7 @@ struct AgentRunner {
             }
             // Read stays allowed: Claude Code spills large tool results to disk and reads them back.
             a += ["--disallowedTools", "Bash", "Edit", "Write", "MultiEdit", "NotebookEdit",
-                  "Agent", "Task", "Glob", "Grep", "WebFetch", "WebSearch"]
+                  "Agent", "Task", "Glob", "Grep", "WebFetch", "WebSearch"] + Self.connectorWriteTools
             if let schema = Self.schemaName(mode) {
                 a += ["--json-schema", try Res.string(schema, "json")]
             }
