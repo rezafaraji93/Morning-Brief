@@ -112,6 +112,8 @@ struct RunResult {
     let stderr: String
     let timedOut: Bool
     let logURL: URL
+    /// Why the caller stopped the run early, if it did (see ProcessHandle).
+    let aborted: String?
 }
 
 enum ProcessStream { case stdout, stderr }
@@ -171,6 +173,41 @@ final class OutputTailer: @unchecked Sendable {
     }
 }
 
+/// Lets the caller stop a run that's under way, when its first output shows it started wrong.
+final class ProcessHandle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var abortReason: String?
+
+    fileprivate func attach(_ p: Process) {
+        lock.lock()
+        process = p
+        let abortedAlready = abortReason != nil
+        lock.unlock()
+        if abortedAlready { end(p) }
+    }
+
+    /// Ends the process and records `reason` in the run's result. The first call wins, and a call
+    /// after the process has exited on its own does nothing.
+    func abort(_ reason: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard abortReason == nil, process?.isRunning != false else { return }
+        abortReason = reason
+        if let p = process { end(p) }
+    }
+
+    /// Why the run was aborted, once `abort` has been called.
+    var reason: String? { lock.lock(); defer { lock.unlock() }; return abortReason }
+
+    private func end(_ p: Process) {
+        guard p.isRunning else { return }
+        p.terminate()
+        let pid = p.processIdentifier
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) { if p.isRunning { kill(pid, SIGKILL) } }
+    }
+}
+
 /// Runs a CLI with stdout/stderr redirected to files (not pipes): agents spawn MCP servers that can
 /// keep inherited pipes open after the parent exits, which would hang a pipe reader forever.
 enum ProcessRunner {
@@ -179,6 +216,7 @@ enum ProcessRunner {
                     cwd: URL,
                     timeout: TimeInterval,
                     logName: String,
+                    handle: ProcessHandle? = nil,
                     onLine: (@Sendable (ProcessStream, String) -> Void)? = nil) async throws -> RunResult {
         Paths.ensure()
         let outURL = Paths.logs.appendingPathComponent("\(logName).stdout.txt")
@@ -209,6 +247,7 @@ enum ProcessRunner {
                 return
             }
             tailer?.start()
+            handle?.attach(p)
             let pid = p.processIdentifier
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 guard p.isRunning else { return }
@@ -226,7 +265,8 @@ enum ProcessRunner {
         // Lossy decode: a killed process can leave a truncated multi-byte sequence at the end.
         let stdout = (try? Data(contentsOf: outURL)).map { String(decoding: $0, as: UTF8.self) } ?? ""
         let stderr = (try? Data(contentsOf: errURL)).map { String(decoding: $0, as: UTF8.self) } ?? ""
-        return RunResult(status: status, stdout: stdout, stderr: stderr, timedOut: timedOut.value, logURL: outURL)
+        return RunResult(status: status, stdout: stdout, stderr: stderr, timedOut: timedOut.value, logURL: outURL,
+                         aborted: handle?.reason)
     }
 }
 

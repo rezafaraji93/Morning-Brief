@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Network
 import ServiceManagement
 import UserNotifications
 
@@ -58,12 +59,27 @@ final class AppState: ObservableObject {
     private var pendingRefresh: Task<Void, Never>?
     /// When `servers` was last read from the agent, so Settings doesn't re-run the check on every open.
     private var serversFetchedAt: Date?
+    /// Names of the servers a brief relies on, as found by the last check or good run, per agent.
+    private let knownServersKey = "MorningBrief.knownServers."
+    /// What the current run reported at startup, kept to update the known servers if it succeeds.
+    private var runServers: [MCPServerStatus]?
+
+    /// The timer can't tick while the Mac sleeps, so a gap between ticks means it slept. A sleeping
+    /// Mac also wakes for a few seconds now and then with the display off (a "dark wake"); a run
+    /// started then freezes when it sleeps again and resumes without its connectors.
+    private var lastTick: Date?
+    private var sleptSinceTick = false
+    private var inDarkWake = false
+    private let pathMonitor = NWPathMonitor()
+    private var networkUp = true
 
     /// A scheduled run that failed gets another go, so a Mac that woke before Wi-Fi did doesn't lose the day.
     private struct AutoRetry { let day: String; var failures: Int; var after: Date }
     private var autoRetry: AutoRetry?
     private static let maxAutoAttempts = 3
-    private static let retryDelay: TimeInterval = 30 * 60
+    private nonisolated static let retryDelay: TimeInterval = 30 * 60
+    /// A run stopped for missing connectors is cheap, so it's tried again sooner.
+    private nonisolated static let connectorRetryDelay: TimeInterval = 5 * 60
 
     private static let clock: DateFormatter = {
         let f = DateFormatter()
@@ -106,6 +122,15 @@ final class AppState: ObservableObject {
                 Task { @MainActor in AppState.shared.checkSchedule() }
             }
         }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { _ in
+            Task { @MainActor in AppState.shared.sleptSinceTick = true }
+        }
+        pathMonitor.pathUpdateHandler = { path in
+            Task { @MainActor in AppState.shared.networkUp = path.status == .satisfied }
+        }
+        pathMonitor.start(queue: DispatchQueue.global(qos: .utility))
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
             Task { @MainActor in AppState.shared.checkSchedule() }
         }
@@ -292,6 +317,7 @@ final class AppState: ObservableObject {
 
     func checkSchedule() {
         let now = Date()
+        noteTick(now)
         let today = BriefStore.dayKey(now)
         guard !isRunning,
               isRunDay(now),
@@ -301,9 +327,25 @@ final class AppState: ObservableObject {
         let attempted = UserDefaults.standard.string(forKey: lastAttemptKey) == today
         let retryDue = autoRetry.map { $0.day == today && now >= $0.after } ?? false
         guard !attempted || retryDue else { return }
+        // Wait for a real wake and for the network; neither wait uses up an attempt.
+        guard !inDarkWake, networkUp else { return }
         UserDefaults.standard.set(today, forKey: lastAttemptKey)
         Task { await generate(manual: false) }
     }
+
+    private func noteTick(_ now: Date) {
+        let gap = lastTick.map { now.timeIntervalSince($0) } ?? 0
+        lastTick = now
+        let slept = sleptSinceTick || gap > 180
+        sleptSinceTick = false
+        // Once a sleep is seen, stay out of the way until the display is on: a dark wake can last
+        // long enough for the timer to tick again.
+        if slept || inDarkWake { inDarkWake = Self.displayAsleep }
+    }
+
+    /// True during a dark wake, and on a Mac whose display went to sleep on its own; the tick gap
+    /// tells the two apart.
+    nonisolated static var displayAsleep: Bool { CGDisplayIsAsleep(CGMainDisplayID()) != 0 }
 
     // MARK: generation
 
@@ -320,14 +362,31 @@ final class AppState: ObservableObject {
         let (kind, binary) = resolved
         status = .running(agent: kind.displayName, since: Date())
         progress = RunProgress(copy: ProgressCopy.started(kind.displayName))
-        defer { progress = nil }
+        runServers = nil
+        // A brief takes minutes; don't let idle sleep cut it short.
+        let activity = ProcessInfo.processInfo.beginActivity(options: .idleSystemSleepDisabled,
+                                                             reason: "Writing the morning brief")
+        defer {
+            progress = nil
+            ProcessInfo.processInfo.endActivity(activity)
+        }
         let snapshot = settings
+        // A scheduled run that starts without a connector that worked last time is stopped at once
+        // and tried again, rather than writing a brief with that source missing. The day's last
+        // attempt runs through regardless, and so does a manual run.
+        let failures = autoRetry?.day == day ? autoRetry!.failures : 0
+        let expected = manual || failures >= Self.maxAutoAttempts - 1 ? [] : knownServers(for: kind)
+        let handle = ProcessHandle()
         do {
             let prompt = try PromptBuilder.build(settings: snapshot)
             let runner = AgentRunner(kind: kind, binary: binary, settings: snapshot)
             let out = try await runAgent(runner, prompt: prompt, mode: .brief, logName: "\(day)-\(kind.rawValue)",
-                                         onLine: { stream, line in
+                                         handle: handle, onLine: { stream, line in
                 guard let event = runner.event(stream: stream, line: line) else { return }
+                if case .started(let servers?) = event {
+                    let missing = MCPList.missing(expected: expected, inRun: servers)
+                    if !missing.isEmpty { handle.abort(missing.joined(separator: ", ")) }
+                }
                 Task { @MainActor in AppState.shared.note(event) }
             })
             // Items the user already ticked off in an earlier brief don't come back.
@@ -337,15 +396,19 @@ final class AppState: ObservableObject {
                                      toolCalls: progress?.toolCalls ?? 0)
             let url = try BriefStore.save(html: rendered.html, json: rendered.json, usage: usage, day: day)
             recent = BriefStore.recent()
+            if let found = runServers { rememberServers(found, kind: kind) }
             status = .idle
             autoRetry = nil
             notifyReady(brief: brief, url: url)
         } catch {
-            handleFailure(error.localizedDescription, manual: manual, day: day)
+            let retry: TimeInterval
+            if case BriefError.connectorsMissing = error { retry = Self.connectorRetryDelay } else { retry = Self.retryDelay }
+            handleFailure(error.localizedDescription, manual: manual, day: day, retryAfter: retry)
         }
     }
 
     private func note(_ event: AgentEvent) {
+        if case .started(let servers) = event { runServers = servers }
         guard var p = progress else { return }
         switch event {
         case .started: break
@@ -370,7 +433,7 @@ final class AppState: ObservableObject {
         probeResult = "Asking \(kind.displayName)…"
         defer { probing = false }
         if let found = await configuredServers(kind: kind, binary: binary) {
-            setServers(found)
+            setServers(found, kind: kind)
             probeResult = "\(kind.displayName):\n" + MCPList.summary(found, kind: kind)
             return
         }
@@ -379,7 +442,7 @@ final class AppState: ObservableObject {
             let out = try await runAgent(runner, prompt: PromptBuilder.probe, mode: .probe,
                                          logName: "probe-\(kind.rawValue)", timeout: 180)
             let found = MCPList.servers(fromToolNames: out.text)
-            setServers(found)
+            setServers(found, kind: kind)
             probeResult = "\(kind.displayName):\n" + MCPList.summary(found, kind: kind)
         } catch {
             probeResult = error.localizedDescription
@@ -518,7 +581,7 @@ final class AppState: ObservableObject {
             : "Adding “\(name)” to \(kind.displayName)…"
         defer { connecting = false }
         if let found = await configuredServers(kind: kind, binary: binary) {
-            setServers(found)
+            setServers(found, kind: kind)
             let known = KnownTool.catalog.first { $0.name == name }
             if let hit = known?.connectedServer(in: found)
                 ?? found.first(where: { $0.state == .connected && $0.displayName.lowercased() == name.lowercased() }) {
@@ -563,12 +626,21 @@ final class AppState: ObservableObject {
         await ensureAgentsDetected()
         guard let (kind, binary) = resolvedAgent(),
               let found = await configuredServers(kind: kind, binary: binary) else { return }
-        setServers(found)
+        setServers(found, kind: kind)
     }
 
-    private func setServers(_ found: [MCPServerStatus]) {
+    private func setServers(_ found: [MCPServerStatus], kind: AgentKind) {
         servers = found
         serversFetchedAt = Date()
+        rememberServers(found, kind: kind)
+    }
+
+    private func knownServers(for kind: AgentKind) -> [String] {
+        UserDefaults.standard.stringArray(forKey: knownServersKey + kind.rawValue) ?? []
+    }
+
+    private func rememberServers(_ found: [MCPServerStatus], kind: AgentKind) {
+        UserDefaults.standard.set(MCPList.expected(from: found), forKey: knownServersKey + kind.rawValue)
     }
 
     private func invalidateServers() {
@@ -600,20 +672,23 @@ final class AppState: ObservableObject {
     }
 
     private func runAgent(_ runner: AgentRunner, prompt: String, mode: AgentRunner.Mode,
-                          logName: String, timeout: TimeInterval? = nil,
+                          logName: String, timeout: TimeInterval? = nil, handle: ProcessHandle? = nil,
                           onLine: (@Sendable (ProcessStream, String) -> Void)? = nil) async throws -> AgentOutput {
         let limit = timeout ?? TimeInterval(max(2, settings.timeoutMinutes) * 60)
         let started = Date()
         var inv = try runner.invocation(prompt: prompt, mode: mode)
         var result = try await ProcessRunner.run(executable: runner.binary, args: inv.args, cwd: Paths.work,
-                                                 timeout: limit, logName: logName, onLine: onLine)
+                                                 timeout: limit, logName: logName, handle: handle, onLine: onLine)
         // Older Claude Code builds or some plans don't offer the "auto" permission mode.
         if runner.kind == .claude, result.status != 0, !result.timedOut,
            result.stderr.localizedCaseInsensitiveContains("permission-mode") ||
            result.stderr.localizedCaseInsensitiveContains("permission mode") {
             inv = try runner.invocation(prompt: prompt, mode: mode, claudePermissionMode: "bypassPermissions")
             result = try await ProcessRunner.run(executable: runner.binary, args: inv.args, cwd: Paths.work,
-                                                 timeout: limit, logName: logName + "-retry", onLine: onLine)
+                                                 timeout: limit, logName: logName + "-retry", handle: handle, onLine: onLine)
+        }
+        if let names = result.aborted {
+            throw BriefError.connectorsMissing(agent: runner.kind.displayName, names: names)
         }
         if result.timedOut { throw BriefError.timedOut(Int(limit / 60)) }
         if let err = runner.reportedError(stdout: result.stdout) { throw BriefError.agentFailed(err) }
@@ -628,12 +703,13 @@ final class AppState: ObservableObject {
 
     /// A manual run just reports. A scheduled run gets two more tries half an hour apart, and the
     /// notification goes out only when the last one has failed too.
-    private func handleFailure(_ message: String, manual: Bool, day: String) {
+    private func handleFailure(_ message: String, manual: Bool, day: String,
+                               retryAfter: TimeInterval = AppState.retryDelay) {
         guard !manual else { status = .failed(message); return }
         var retry = autoRetry?.day == day ? autoRetry! : AutoRetry(day: day, failures: 0, after: .distantPast)
         retry.failures += 1
         if retry.failures < Self.maxAutoAttempts {
-            retry.after = Date().addingTimeInterval(Self.retryDelay)
+            retry.after = Date().addingTimeInterval(retryAfter)
             autoRetry = retry
             status = .failed("\(message) Trying again at \(Self.clock.string(from: retry.after)).")
         } else {
