@@ -184,7 +184,8 @@ struct AgentRunner {
                   let d = line.data(using: .utf8),
                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
             if o["type"] as? String == "system" {
-                return o["subtype"] as? String == "init" ? .started : nil
+                guard o["subtype"] as? String == "init" else { return nil }
+                return .started(MCPList.parse(initServers: o["mcp_servers"]))
             }
             guard let message = o["message"] as? [String: Any],
                   let content = message["content"] as? [[String: Any]] else { return nil }
@@ -400,9 +401,15 @@ struct KnownTool: Identifiable, Hashable {
 
 /// One server row from `claude mcp list`.
 struct MCPServerStatus: Equatable {
-    enum State { case connected, needsAuth, failed, other }
+    /// `pending` is a server a headless run was still connecting to when the model's first turn
+    /// began, or one served from Claude Code's cached tool list; its docs say not to read it as a
+    /// failure, and its tools do turn up during the run.
+    enum State { case connected, pending, needsAuth, failed, other }
     let name: String     // as configured, e.g. "claude.ai Linear" or "plugin:slack:slack"
     let state: State
+
+    /// Whether a run can call this server's tools.
+    var isUsable: Bool { state == .connected || state == .pending }
 
     /// "claude.ai Linear" → "Linear", "plugin:slack:slack" → "Slack".
     var displayName: String {
@@ -435,6 +442,40 @@ enum MCPList {
             servers.append(MCPServerStatus(name: name, state: state))
         }
         return servers
+    }
+
+    /// The `mcp_servers` array of a headless run's `system/init` event: each server's state when
+    /// the model's first turn began. nil when the event doesn't carry one (an older Claude Code);
+    /// an empty array is a run that found no servers at all.
+    static func parse(initServers value: Any?) -> [MCPServerStatus]? {
+        guard let rows = value as? [[String: Any]] else { return nil }
+        return rows.compactMap { row in
+            guard let name = row["name"] as? String else { return nil }
+            let state: MCPServerStatus.State
+            switch (row["status"] as? String ?? "").lowercased() {
+            case "connected": state = .connected
+            case "pending": state = .pending
+            case "failed": state = .failed
+            case "needs-auth", "needs_auth": state = .needsAuth
+            default: state = .other
+            }
+            return MCPServerStatus(name: name, state: state)
+        }
+    }
+
+    /// The servers a brief depends on among `servers`: usable ones that serve a brief role. They're
+    /// remembered after a check or a good run, so the next run can tell when it started without one.
+    static func expected(from servers: [MCPServerStatus]) -> [String] {
+        servers.filter { s in
+            s.isUsable && roles.contains { $0.keywords.contains { s.name.lowercased().contains($0) } }
+        }.map(\.name)
+    }
+
+    /// Display names of the remembered servers that a run started without (absent, failed, or
+    /// needing a sign-in). A brief written then would silently lack their source.
+    static func missing(expected: [String], inRun servers: [MCPServerStatus]) -> [String] {
+        let usable = Set(servers.filter(\.isUsable).map(\.name))
+        return expected.filter { !usable.contains($0) }.map { MCPServerStatus(name: $0, state: .other).displayName }
     }
 
     private static let roles: [(role: String, keywords: [String])] = [

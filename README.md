@@ -24,7 +24,7 @@ The agent only gathers, sorts and writes the words; the app draws the page, so e
 2. **Check what's connected** lists which tools serve calendar, chat, email, meeting notes and tasks, and which still need a sign-in. Add missing ones under **Add a tool**; you sign in once in the browser.
 3. **Fill from your agent's memory** prefills your name and "About you"; edit as needed, and add **Extra sections** for anything specific, one per line.
 4. **Suggest from Slack** fills in the channels to watch; add any it missed.
-5. Click **Generate now**. The first brief takes about four minutes. After that it runs by itself at the time you set (8:00 on weekdays by default), or as soon as your Mac wakes, and retries twice if a run fails. Turn on **Launch at login**.
+5. Click **Generate now**. The first brief takes about four minutes. After that it runs by itself at the time you set (8:00 on weekdays by default), or as soon as your Mac is properly awake and online, and retries if a run fails or starts without a tool that worked last time. Turn on **Launch at login**.
 
 ## What's in the brief
 

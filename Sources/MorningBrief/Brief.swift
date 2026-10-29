@@ -6,6 +6,8 @@ enum BriefError: LocalizedError {
     case agentFailed(String)
     case timedOut(Int)
     case unparseable(String)
+    /// A scheduled run began without connectors that worked last time (agent name, their names).
+    case connectorsMissing(agent: String, names: String)
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +16,7 @@ enum BriefError: LocalizedError {
         case .agentFailed(let m): return m
         case .timedOut(let m): return "The agent didn't finish within \(m) minutes."
         case .unparseable(let m): return "Couldn't read the agent's answer as a brief. \(m)"
+        case .connectorsMissing(let agent, let names): return "\(agent) started without \(names), which worked last time."
         }
     }
 }

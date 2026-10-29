@@ -8,7 +8,9 @@ struct RunProgress: Equatable {
 
 /// Something the agent's live output said it was doing.
 enum AgentEvent {
-    case started
+    /// The run began. Claude Code also says which MCP servers it had and their state; nil for an
+    /// agent that doesn't report them.
+    case started([MCPServerStatus]?)
     case tool(String)   // the tool's name as the agent calls it
     case thinking
     case writing
